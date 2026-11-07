@@ -1,0 +1,4 @@
+# G5-G 研究用探针插件：只在沙盒里装，不进 dsh-master
+- insert:
+    - id: g5g-probe
+      name: g5g-probe

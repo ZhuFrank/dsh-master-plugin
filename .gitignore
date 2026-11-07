@@ -1,0 +1,14 @@
+node_modules/
+lib/
+# spike 里的 lib 是手写的探针插件（没有构建步骤），要进库
+!spike/*/lib/
+*.tgz
+.tmp/
+*.log
+# 插件在项目根写的状态目录（本仓库被 dsh-master 管着时会出现）
+.dsh-master/
+# 端到端测试写的截图和记录
+docs/g*/
+docs/trial*/
+.DS_Store
+dist/

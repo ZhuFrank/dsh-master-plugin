@@ -1,0 +1,8 @@
+{
+  "name": "dsh-master-devlog",
+  "version": "0.1.0",
+  "private": true,
+  "description": "记忆层：devlog 条目 / 索引 / 按 tag 回忆 / 决策日志 / 记忆文件 / 记忆桥 / 自动推送回忆 / 受管文件校验（被 dsh-master 打包引用）",
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./package.json": "./package.json" }
+}

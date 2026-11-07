@@ -1,0 +1,19 @@
+[dsh-master 消息 · 来自 exec-docs · 发给 master · L1103-7 · 回报 · 2026-11-05 1042]（消息键 report:L1103-7:完成:c4ae7772e18b）
+[L1103-7] 状态=完成 ｜时间：2026-11-05 1042 ｜当前动作：docs 下 20 个 .md 共 1957 行统计表已写入 .tmp/e2e-1105/stats.md，双路复核一致
+产物：/Users/alice/work/.tmp/e2e-1105/stats.md（601B，16 行；该目录下唯一文件）。docs 未改动：写前写后 99 个文件的 sha256 全量 diff 为空（DOCS_UNCHANGED=yes）；.tmp 顶层新增前后 diff 仅 `> e2e-1105`。
+
+统计结果（递归、只统计 .md、行数按 wc -l、统计时间 2026-11-05 10:42 北京时间）：
+| 目录 | 文件数 | 总行数 |
+| (根目录) | 4 | 700 |
+| devlog | 8 | 290 |
+| g4b | 2 | 106 |
+| research | 3 | 315 |
+| trial-G3 | 3 | 546 |
+| 合计 | 20 | 1957 |
+
+自测复核（两条独立路径 + 表格回读）：
+1) shell：`find docs -name '*.md' -type f -print0 | xargs -0 wc -l` 再用 awk 按目录汇总 → (根目录) 4/700、devlog 8/290、g4b 2/106、research 3/315、trial-G3 3/546、合计 20/1957，与表格逐格一致。
+2) Python 独立重算：os.walk 递归、数 b'\n' 作为 wc -l 口径 → 20 个文件 / 1957 行；table_matches_python=True、total_ok=True、sorted_ok=True。
+3) find 计数 20 个 .md，与合计行一致；目录排序按 LC_ALL=C 目录名（(根目录) 在首），5 个分组。
+
+devlog slug：docs-md-stats-l1103-7。未 git commit/push，未动任何现有文件。
