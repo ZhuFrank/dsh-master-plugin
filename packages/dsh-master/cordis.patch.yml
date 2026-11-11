@@ -107,7 +107,7 @@
       config:
         id: dsh-master-master
         name: dsh-master 总管
-        description: dsh-master 总管会话专用，不供手动选择。派活与验收，不直接写文件；前台命令和等待超 5 秒转入后台。
+        description: 在项目文件夹里用它新建会话，这个会话就是该项目的总管。派活与验收，不直接写文件；前台命令和等待超 5 秒转入后台。
         order: 93
         plugins:
           - id: agent-instructions
