@@ -29,12 +29,14 @@ import { systemClock, bjtIso, bjtStamp } from './time.ts'
 import { rolePrompt } from './prompts.ts'
 import { Patrol } from './patrol.ts'
 import { HeavyQueue } from './heavy.ts'
-import { FilePushGate, topicPriors, scheduleStep } from './recall-push.ts'
+import { FilePushGate, topicPriors, scheduleStep, isSafetyNetDelivery } from './recall-push.ts'
 import { PanelService, PanelError } from './panel-service.ts'
 import { validateAction, checkPost, readLimited, drain, PANEL_LIMITS } from './panel-api.ts'
 import { Attribution } from './attrib.ts'
 import { doctor } from './doctor.ts'
 import { WaitingTracker, track, waitTitle } from './waiting.ts'
+import { MasterNowTracker } from './status-bar.ts'
+import { schedEntries, schedCreateEvery, schedDelete, normEntry } from './schedule-compat.ts'
 import { ProjectRegistry, projectPaths, memberPrefixOf, projectDotDir, findProjectRoot, gitExclude, claimOwner, type ProjectRow } from './projects.ts'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -42,6 +44,8 @@ export const name = 'dsh-master'
 export const inject = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'tools', 'webServer', 'connection', 'permissionPresets', 'systemPrompt']
 
 export interface Config {
+  /** G11-1 消息直送（默认开）：用户在成员会话里直接说话不叫醒总管、看板「回答等你定」直投负责成员、巡检报要紧的直接对话。false ⇒ 旧行为。 */
+  directToMember?: boolean
   stateDir?: string
   masterCwd?: string
   idleGraceMs?: number
@@ -167,11 +171,12 @@ export function apply(ctx: any, config: Config = {}): void {
     },
   })
   const waiting = new WaitingTracker(systemClock)
+  const masterNow = new MasterNowTracker() // G11-2 状态栏「正在：」（只在内存）
 
   function makeUnit(key: string, store: Store, mem: MemoryLayer, backupDir: string, project?: ProjectRow): Unit {
     const delivery = new Delivery(store, ports, systemClock, deliveryOpts)
     const u = { key, project, store, mem, delivery, backupDir, pushed: new Map<string, Set<string>>(), filePush: new FilePushGate(file => mem.relatedForFiles([file])) } as Unit
-    u.core = new Core(store, delivery, ports, systemClock, { idleGraceMs: config.idleGraceMs ?? 120_000, mem, heavy,
+    u.core = new Core(store, delivery, ports, systemClock, { idleGraceMs: config.idleGraceMs ?? 120_000, mem, heavy, directToMember: config.directToMember !== false,
       ...(project ? { masterId: project.master, memberPrefix: memberPrefixOf(project), projectRoot: project.root, memberPreset: config.projectMemberPreset ?? 'workspace-write', masterPreset: masterPresetOf(config) } : {}),
       patrol: async () => ({ findings: u.patrol.findings() }), tag: (caller, a) => u.attrib.tag(caller, a),
       doctor: () => ({ problems: doctor(store, mem, { now: systemClock(), backupDir }) }),
@@ -349,6 +354,8 @@ export function apply(ctx: any, config: Config = {}): void {
     const callerId: string | undefined = exec?.agent?.id
     const u = unitOf(callerId)
     const role = callerId && u ? u.core.roleOf(callerId) : undefined
+    // G11-2 状态栏「正在：」只记总管的、只记工具名 + description（status-bar.ts），命令全文不记
+    if (role === 'master' && callerId) masterNow.record(callerId, exec?.name, exec?.arguments, systemClock())
     const cwd = exec?.agent ? cwdOf(exec.agent) : undefined
     const call = { name: exec?.name, args: exec?.arguments, role, cwd }
     // G6-4：项目成员（工作目录是项目根，不是临时 worktree）不许动 git 暂存区 / 提交 / 分支
@@ -440,7 +447,8 @@ ${list}
       if (decision?.kind !== 'enter' || !agent || !u) return decision
       let msgs: any[] = decision.messages ?? []
       // 定时巡检保底到了：插件先自己跑一遍巡检（不调模型），没有发现就跳过这一步（无论有没有配模型都不会报失败）
-      if (agent.id === u.core.masterId && msgs.some(m => m?.source?.kind === 'schedule')) {
+      // G11-5：只认插件自己的保底投递；0.2.2 的「[SCHEDULE CHANGE]」改动通知 source 也是 schedule，不能当成保底（不然会把发现记成已见过）
+      if (agent.id === u.core.masterId && msgs.some(m => isSafetyNetDelivery({ kind: m?.source?.kind, text: textOf(m) }))) {
         // G8：暂停中定时保底不该再来（暂停时删掉了）；万一来了（删之前已排上的）也不叫醒模型
         if (pausedInfo(u.store) && scheduleStep(msgs.map(m => ({ kind: m?.source?.kind, form: m?.source?.form, text: textOf(m) })), 0) === 'skip') {
           u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'patrol/schedule-paused', data: { messages: msgs.length } })
@@ -506,9 +514,9 @@ ${list}
     if (!sched) return
     log('插件被卸载或关闭：删掉定时保底（%s）', [...masters].join(','))
     void (async () => {
-      for (const c of await sched.catalog()) {
-        if (!masters.has(c.sessionId) || !String(c.title ?? '').startsWith('dsh-master 定时巡检保底')) continue
-        try { await sched.delete({ sessionId: c.sessionId, id: c.id }) } catch (e) { warn('卸载时删定时保底 %s：%s', c.id, String(e)) }
+      for (const c of await schedEntries(sched)) {
+        if (!c.sessionId || !masters.has(c.sessionId) || !c.title.startsWith('dsh-master 定时巡检保底')) continue
+        try { await schedDelete(sched, c) } catch (e) { warn('卸载时删定时保底 %s：%s', c.id, String(e)) }
       }
     })().catch(e => warn('卸载时删定时保底：%s', String(e)))
   })
@@ -538,10 +546,9 @@ ${list}
     const sched = await scheduleService()
     const removed: string[] = []
     if (sched) {
-      for (const c of await sched.catalog()) {
-        if (c.sessionId !== u.core.masterId || !String(c.title ?? '').startsWith('dsh-master 定时巡检保底')) continue
-        const r = await sched.delete({ sessionId: c.sessionId, id: c.id })
-        if (r?.deleted) removed.push(String(c.id))
+      for (const c of await schedEntries(sched)) {
+        if (c.sessionId !== u.core.masterId || !c.title.startsWith('dsh-master 定时巡检保底')) continue
+        if (await schedDelete(sched, c)) removed.push(c.id)
       }
     }
     return { removed, sched }
@@ -584,12 +591,12 @@ ${list}
     const sched = await scheduleService()
     if (!sched) { u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'schedule/unavailable', data: { every } }); return }
     const want = `dsh-master 定时巡检保底（每 ${every} 秒）`
-    const cat = await sched.catalog()
-    if (cat.some((c: any) => c.sessionId === u.core.masterId && c.title === want && c.status !== 'inactive')) return
-    const rec = await sched.create(u.core.masterId, { title: want, every_seconds: every,
+    // G11-5：经 schedule-compat 走，DSH 0.2.1 / 0.2.2 两种定时服务接口都能用
+    if ((await schedEntries(sched)).some(c => c.sessionId === u.core.masterId && c.title === want && c.active)) return
+    const id = await schedCreateEvery(sched, u.core.masterId, { title: want, everySeconds: every,
       prompt: '【这是 dsh-master 的定时巡检保底消息，不是用户说的】请调用 master_patrol 看一眼有没有停滞、投递失败、待用户定、带外改动；没有就直接结束本轮，不要回复用户。' })
-    u.store.setMeta('schedule_id', String(rec?.id ?? ''))
-    u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'schedule/created', data: { id: rec?.id, every } })
+    u.store.setMeta('schedule_id', String(id ?? ''))
+    u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'schedule/created', data: { id, every } })
   }
 
   // ---- 面板接口：只挂 connection.fetch（/api，DSH owner 认证；手机经 dsh-pocket 也是 owner），不放进无鉴权的 webServer ----
@@ -615,6 +622,17 @@ ${list}
   const projectList = () => unitList().filter(u => u.project).map(u => ({ id: u.project!.id, root: u.project!.root, master: u.project!.master }))
   const getRoute = (p: string, fn: (q: URLSearchParams) => Promise<unknown> | unknown) => ctx.effect(() => ctx.connection.fetch.register({ path: p, methods: ['GET'], requestBody: 'buffered',
     fetch: async (req: Request) => { try { return reply(200, await fn(new URL(req.url).searchParams)) } catch (e) { return failed(e) } } }))
+  /** G11-2：这个单元总管的下一次定时保底（宿主定时服务的 scheduledAt；暂停中 / 拿不到 ⇒ null）。 */
+  const nextScheduleOf = async (u: Unit): Promise<string | null> => {
+    if (pausedInfo(u.store)) return null
+    const sched = scheduleRef ?? (() => { try { return ctx.get?.('schedule') } catch { return undefined } })()
+    if (!sched) return null
+    try {
+      const at = (await schedEntries(sched)).filter(c => c.sessionId === u.core.masterId && c.active && c.title.startsWith('dsh-master 定时巡检保底'))
+        .map(c => c.scheduledAt ?? '').filter(Boolean).sort()
+      return at[0] ?? null
+    } catch { return null }
+  }
   const waitingView = async (u: Unit) => {
     const list = waiting.list().filter(w => { const o = unitOf(w.session); return u.project ? o === u : (!o || o === u) })
     // 不在花名册里的会话才去问宿主要标题（宿主列表里有 projections.values.title）
@@ -628,7 +646,9 @@ ${list}
     const u = await unitFor(q); const sid = q.get('session')
     // 这个会话不在任何项目、也不在旧花名册里，而且已经有项目开张了 ⇒ 告诉用户这里还没开张（只有旧单元时不提示，和以前一样）
     const notOpened = !!sid && !u.project && !legacy.core.roleOf(sid) && projectList().length > 0
-    return { waiting: await waitingView(u), ...(u.panel.state({ view: q.get('view') ?? undefined, from: q.get('from') ?? undefined, to: q.get('to') ?? undefined })), sessions: u.panel.sessionsView(),
+    const waitingList = await waitingView(u)
+    const statusBar = u.panel.statusBar({ doing: masterNow.get(u.core.masterId), waitingCount: waitingList.length, nextSchedule: await nextScheduleOf(u) })
+    return { waiting: waitingList, statusBar, ...(u.panel.state({ view: q.get('view') ?? undefined, from: q.get('from') ?? undefined, to: q.get('to') ?? undefined })), sessions: u.panel.sessionsView(),
       master: u.core.masterId, ...(u.project ? { project: { id: u.project.id, root: u.project.root, master: u.project.master } } : {}),
       unenrolled: u.project ? u.panel.unenrolled() : [], gateIndex: u.panel.gateIndex(), askIndex: u.panel.askIndex(), notOpened, projects: notOpened ? projectList() : [],
       ...(u.project && pausedInfo(u.store) ? { paused: pausedView(u) } : {}),
@@ -684,7 +704,8 @@ function registerDebug(ctx: any, d: { units: Map<string, Unit>; legacy: Unit; un
       if (p === '/open-log') return json(res, 200, d.openLog)
       if (p === '/projects') return json(res, 200, { registry: d.registry.list(), units: [...d.units.keys()] })
       if (p === '/patrol') return json(res, 200, { result: patrol.tick(), findings: patrol.findings() })
-      if (p === '/schedules') return json(res, 200, await ctx.get?.('schedule')?.catalog?.() ?? null)
+      // G11-5：两版条目形状不同（0.2.2 的会话在 target 里、status 多了 paused / ended）⇒ 调试接口统一补上 sessionId、把非 active 写成 inactive，原值放 rawStatus
+      if (p === '/schedules') { const sc = ctx.get?.('schedule'); return json(res, 200, sc ? (await sc.catalog()).map((c: any) => { const e = normEntry(c); return { ...c, sessionId: e.sessionId, status: e.active ? 'active' : 'inactive', rawStatus: c.status } }) : null) }
       if (p === '/mem') return json(res, 200, { devlog: mem.listDevlog().map(r => mem.indexLine(r)), memories: mem.listMemories(), check: mem.check(), docs: mem.docs.root })
       if (p === '/events') return json(res, 200, store.events({ type: url.searchParams.get('type') ?? undefined }).map(e => ({ ...e, data: JSON.parse(e.data) })))
       if (p === '/heavy') return json(res, 200, d.legacy.store.heavyJobs())

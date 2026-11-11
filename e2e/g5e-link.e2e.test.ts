@@ -42,6 +42,9 @@ it('G5-E ⑥：话题推送降噪 + 跨任务关联', async () => {
 
   // ── 按话题推送：泛标签不推，具体标签推（只对花名册里的会话推；用一个新建、没收到过推送的执行会话；同一会话同一条只推一次） ──
   fs.mkdirSync(path.join(base, 'v'), { recursive: true })
+  // G11-1 起：上面 dl() 是用户直接对 exec-w 说的话，那两轮不再发空闲提醒叫醒总管，两条「用户直接指示」inject（正文是用户原话 CALL devlog_add）
+  // 会攒到总管下一步；假模型会把同一步里的 CALL 行当工具调用，spawn 就被挤掉了。先让总管走一步把它们消化掉（等同于以前空闲提醒那次叫醒）。
+  await prompt('master', '收到，继续'); await quiet()
   await prompt('master', call('master_spawn', { name: 'v', cwd: path.join(base, 'v'), title: '执行 V' }))
   await sb.waitFor('exec-v', async () => (await dstate()).sessions.find((x: any) => x.id === 'exec-v'))
   await quiet()

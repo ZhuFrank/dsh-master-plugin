@@ -32,7 +32,8 @@ function helpers(sb: Sandbox) {
   const fileSchedules = (sid: string) => {
     try {
       const t = JSON.parse(fs.readFileSync(path.join(sb.home, 'storages', 'schedule.json'), 'utf8')).tables.tasks as Record<string, any>
-      return Object.entries(t).filter(([, c]) => c.sessionId === sid && String(c.record?.title ?? '').startsWith(TITLE) && c.status !== 'inactive').map(([k]) => k)
+      // G11-5：0.2.2 落盘的条目没有顶层 sessionId（在 target 里），status 多了 paused / ended
+      return Object.entries(t).filter(([, c]) => (c.sessionId ?? c.target?.sessionId) === sid && String(c.record?.title ?? '').startsWith(TITLE) && c.status === 'active').map(([k]) => k)
     } catch { return [] }
   }
   const open = async (sid: string, cwd: string, id: string) => {

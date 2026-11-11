@@ -42,10 +42,16 @@ export const SCHEDULE_MARK = 'dsh-master 的定时巡检保底'
  * 定时巡检保底到了：这一步只有保底提醒、插件自己巡检没有发现 ⇒ 跳过（不调模型；没配模型时也不会报失败）。
  * 有发现、或混着别的消息 ⇒ 照常进入这一步。
  */
+/** G11-5：DSH 0.2.2 在定时任务被别处改动时给相关会话发「[SCHEDULE CHANGE]」通知（source.kind 也是 schedule、不开新的一轮），它不是投递。 */
+export const isScheduleChangeNotice = (m: { kind?: string; text: string }): boolean => m.kind === 'schedule' && m.text.trimStart().startsWith('[SCHEDULE CHANGE]')
+/** 这条是插件自己的定时巡检保底投递（不是改动通知、不是别的定时提醒）。 */
+export const isSafetyNetDelivery = (m: { kind?: string; text: string }): boolean => m.kind === 'schedule' && !isScheduleChangeNotice(m) && m.text.includes(SCHEDULE_MARK)
+
 export function scheduleStep(messages: Array<{ kind?: string; form?: string; text: string }>, findings: number): 'skip' | 'enter' {
-  // 宿主每一步都会带上环境快照（runtime-context / time-context，form=snapshot），它们不算「叫醒这一步的消息」
-  const waking = messages.filter(m => m.form !== 'snapshot')
+  // 宿主每一步都会带上环境快照（runtime-context / time-context，form=snapshot），它们不算「叫醒这一步的消息」；
+  // G11-5：0.2.2 的定时任务改动通知也不算（宿主说它「不是投递、不需要处理」）
+  const waking = messages.filter(m => m.form !== 'snapshot' && !isScheduleChangeNotice(m))
   if (!waking.length) return 'enter'
-  const allSafetyNet = waking.every(m => m.kind === 'schedule' && m.text.includes(SCHEDULE_MARK))
+  const allSafetyNet = waking.every(isSafetyNetDelivery)
   return allSafetyNet && findings === 0 ? 'skip' : 'enter'
 }

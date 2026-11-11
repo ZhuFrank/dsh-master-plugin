@@ -9,6 +9,7 @@ import { filterTasks, type PanelAction, type PanelView } from './panel-api.ts'
 import type { Attribution } from './attrib.ts'
 import { findPaths } from './paths.ts'
 import { bjtIso, bjtStamp, type Clock } from './time.ts'
+import type { Doing } from './status-bar.ts'
 
 export interface ContentPart { type: 'text'; text: string }
 export interface TurnText { turn: number; seqStart: number; seqEnd: number | null; ended: boolean; parts: Array<{ role: 'user' | 'assistant' | 'relay'; text: string; seq: number }> }
@@ -38,7 +39,8 @@ export class PanelService {
     const date = (v?: string) => v && /^\d{4}-\d\d-\d\d$/.test(v) ? v : undefined
     const now = this.clock()
     const asks = this.store.openAsks()
-    const tasks = filterTasks(this.store.listTasks(), view, now, { from: date(q.from), to: date(q.to) }, new Set(asks.map(a => a.task)))
+    const focus = this.store.focusMap()
+    const tasks = filterTasks(this.store.listTasks(), view, now, { from: date(q.from), to: date(q.to) }, new Set(asks.map(a => a.task)), new Set(focus.keys()))
     return {
       now: bjtStamp(now), view,
       tasks: tasks.map(t => this.taskCard(t, asks)),
@@ -49,9 +51,40 @@ export class PanelService {
     }
   }
 
+  /**
+   * G11-2 总管状态栏：总管忙闲 + 正在什么（只有工具名 + 说明，见 status-bar.ts）、下次定时保底、
+   * 三个待处理计数（等你定 / 等你点 / 受阻）、执行会话块（在岗成员 + 手上没结的任务和闸门）。
+   * 「正在」「等你点」「下次保底」由入口给（内存里的记录、宿主定时服务），这里只拼。
+   */
+  statusBar(x: { doing?: Doing | undefined; waitingCount: number; nextSchedule?: string | null | undefined }) {
+    const tasks = this.store.listTasks()
+    const open = tasks.filter(t => !TERMINAL_TASK_STATES.has(t.state))
+    const at = (iso: string | null | undefined) => { const ms = iso ? Date.parse(iso) : NaN; return Number.isFinite(ms) ? bjtStamp(ms) : null }
+    return {
+      master: { id: this.core.masterId, live: this.core.port.status(this.core.masterId), doing: x.doing?.label ?? null, doingAt: x.doing ? bjtStamp(x.doing.atMs) : null },
+      nextSchedule: at(x.nextSchedule),
+      counts: { asks: this.store.openAsks().length, waiting: x.waitingCount, blocked: open.filter(t => t.state === '受阻').length },
+      members: this.store.listSessions().filter(s => s.role === 'exec' && s.status === 'active').map(s => ({
+        id: s.id, title: s.title, live: this.core.port.status(s.id),
+        tasks: open.filter(t => t.owner === s.id).map(t => ({ id: t.id, state: t.state, gate: t.gate })),
+      })),
+    }
+  }
+
+  /**
+   * G11-1：关于这件任务，用户该找谁说话。消息直送开着、负责人是在岗成员 ⇒ 成员；
+   * 负责人是总管自己、没有这个任务 / 负责人、负责人已关闭、消息直送关了 ⇒ 总管。
+   */
+  talkTo(task: string): string {
+    const owner = this.store.getTask(task)?.owner
+    if (!this.core.directEnabled || !owner || owner === this.core.masterId || this.core.roleOf(owner) !== 'exec') return this.core.masterId
+    return owner
+  }
+
   private taskCard(t: TaskRow, asks: ReturnType<Store['openAsks']>) {
     const last = this.store.events({ task: t.id, limit: 1 })[0]
-    return { id: t.id, kind: t.kind, title: t.title, owner: t.owner, state: t.state, gate: t.gate, closed: TERMINAL_TASK_STATES.has(t.state),
+    const focusAt = this.store.getMeta(`focus:${t.id}`)
+    return { id: t.id, kind: t.kind, title: t.title, owner: t.owner, talkTo: this.talkTo(t.id), focus: !!focusAt, focusAt: focusAt ? bjtStamp(Date.parse(focusAt)) : null, state: t.state, gate: t.gate, closed: TERMINAL_TASK_STATES.has(t.state),
       created: bjtStamp(Date.parse(t.created_at)), updated: bjtStamp(Date.parse(t.updated_at)), openAsks: asks.filter(a => a.task === t.id).length,
       last: last ? { type: last.type, at: bjtStamp(Date.parse(last.at)) } : null }
   }
@@ -189,11 +222,23 @@ export class PanelService {
         if (!ask) throw new PanelError('not_found', `没有 #${a.ask}`)
         if (ask.state !== 'open') throw new PanelError('closed', `#${a.ask} 已经回答过了`)
         this.store.answerAsk(a.ask, a.answer, bjtIso(now))
-        this.store.addEvent({ at: bjtIso(now), task: ask.task, type: 'ask/answered', data: { id: a.ask, answer: a.answer } })
+        const label = ask.code ?? `#${a.ask}`
+        // G11-1：负责这件任务的在岗成员直接收答案；总管只留一条 inject（不叫醒，下次醒来看得到）
+        const member = this.talkTo(ask.task)
+        if (member !== this.core.masterId) {
+          this.store.addEvent({ at: bjtIso(now), task: ask.task, type: 'ask/answered', data: { id: a.ask, answer: a.answer, to: member } })
+          this.core.markUserOpened(member) // 答案开的这一轮算用户开的：成员接着干、不回报也不叫醒总管
+          this.core.systemNotify({ key: `answer:${a.ask}`, to: member, task: ask.task, mode: 'followup', label: '回答等你定',
+            text: `用户在看板回答了等你定 ${label}（@${ask.task}）。\n问题：${ask.question}\n回答：${a.answer}\n按这个答案继续；要总管知道的照常用 master_report 回报。` })
+          try { this.core.systemNotify({ key: `answer-note:${a.ask}`, to: this.core.masterId, task: ask.task, mode: 'inject', label: '回答等你定',
+            text: `用户在看板回答了等你定 ${label}（@${ask.task}）：${a.answer}。已直接转给 ${member}，不用你转。` }) } catch { /* 限频：成员那边已经收到 */ }
+          return { ok: true, to: member }
+        }
+        this.store.addEvent({ at: bjtIso(now), task: ask.task, type: 'ask/answered', data: { id: a.ask, answer: a.answer, to: this.core.masterId } })
         const requestId = `panel-${now}-${Math.random().toString(36).slice(2, 8)}`
         await this.port.promptUser(this.core.masterId, requestId, [{ type: 'text', text: `【来自看板｜回答等你定 ${ask.code ?? `#${a.ask}`}（@${ask.task}）】\n问题：${ask.question}\n回答：${a.answer}` }])
         this.record(requestId, ask.task, `回答 #${a.ask}：${a.answer}`, now)
-        return { ok: true, requestId }
+        return { ok: true, requestId, to: this.core.masterId }
       }
       case 'done': case 'cancel': {
         try { return { ok: true, ...this.core.userCloseTask(a.task, a.action === 'done' ? '完成' : '取消', a.note) } }
@@ -202,7 +247,13 @@ export class PanelService {
       case 'confirm_tag': {
         try { return { ok: true, ...this.attrib.confirm(a.session, a.turn, a.task) } }
         catch (e) { if (e instanceof ToolInputError) throw new PanelError('bad_state', e.message); throw e }
-      }      // G8：暂停 / 恢复在入口里处理（要删建宿主定时任务），不该走到这里
+      }
+      case 'focus': {
+        if (!this.store.getTask(a.task)) throw new PanelError('not_found', `没有任务 ${a.task}`)
+        this.store.setFocus(a.task, a.on ? bjtIso(now) : null)
+        return { ok: true, task: a.task, focus: a.on }
+      }
+      // G8：暂停 / 恢复在入口里处理（要删建宿主定时任务），不该走到这里
       case 'pause': case 'resume': throw new PanelError('bad_state', '暂停 / 恢复要经入口处理')
     }
   }

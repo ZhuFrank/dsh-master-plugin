@@ -71,7 +71,11 @@ export interface CoreOptions {
   /** 巡检（master_patrol 工具用）。 */
   patrol?: () => Promise<{ findings: Array<{ key: string; text: string }> }>
   heavy?: HeavyRunner
+  /** G11-1 消息直送（默认开）：用户在成员会话里开的那一轮不发空闲提醒；看板「回答等你定」直投负责成员；巡检报「直接对话」。false ⇒ 旧行为。 */
+  directToMember?: boolean
 }
+/** G11-1：用户消息和「开始跑」相差多少毫秒以内，算这一轮是用户开的（宿主两个事件先后不定）。 */
+export const USER_TURN_WINDOW_MS = 10_000
 export const HANDBOOK_SECTIONS = ['标准做法', '坑', '工具与素材', '用户偏好与否决过的做法', '还没想清楚的', '做过的任务'] as const
 export const SPEC_SECTIONS = ['目标', '要读的', '交付物', '验收标准', '红线'] as const
 export interface SpecMeta { file: string; title: string; expected: string; output: string; resume: string; start?: string; writtenAt?: string; caller?: string; body?: Record<string, string> }
@@ -497,15 +501,32 @@ export class Core {
     return this.store.listTasks().filter(t => t.owner === sessionId && ACTIVE_TASK_STATES.has(t.state))
   }
 
+  /** G11-1 消息直送开着吗（配置 directToMember，默认开）。 */
+  get directEnabled(): boolean { return this.opts.directToMember !== false }
+  /** G11-1：这一轮是用户开的吗（onStatus running / onUserMessage 两边谁后到谁记）。 */
+  private isUserTurn(sessionId: string, started: number): boolean {
+    return this.store.getMeta(`userturn:${sessionId}`) === String(started)
+  }
+
   /** DSH 的 agent/status 事件进来。执行会话一轮结束却没回报 → 宽限期后提醒总管。 */
   onStatus(sessionId: string, status: 'running' | 'idle'): void {
     const role = this.roleOf(sessionId)
     if (!role) return
     const now = this.clock()
-    if (status === 'running') { this.store.setTurnStart(sessionId, now); return }
+    if (status === 'running') {
+      this.store.setTurnStart(sessionId, now)
+      const u = Number(this.store.getMeta(`usermsg:${sessionId}`) || NaN)
+      if (role === 'exec' && now - u >= 0 && now - u <= USER_TURN_WINDOW_MS) this.store.setMeta(`userturn:${sessionId}`, String(now))
+      // 一条用户消息只认领一轮：开始跑了就用掉（g2-flow 回归：用户说完、10 秒内派活开的一轮被误当成用户开的，空闲提醒没了）
+      if (role === 'exec') this.store.setMeta(`usermsg:${sessionId}`, '')
+      return
+    }
     if (role !== 'exec') return
     const t = this.store.getTurn(sessionId)
     if (!t?.started_ms) return
+    // G11-1：记下这一轮结束的时间（巡检判「直接对话 30 分钟没回」）；用户开的那一轮，看成员的回答里有没有「改了结论」
+    this.store.setMeta(`turnend:${sessionId}`, String(now))
+    if (this.isUserTurn(sessionId, t.started_ms)) void this.noteDirectReply(sessionId)
     if ((t.last_report_ms ?? -1) >= t.started_ms) return
     if (!this.activeTasks(sessionId).length) return
     this.scheduleIdleCheck(sessionId, t.started_ms, this.opts.idleGraceMs)
@@ -537,6 +558,11 @@ export class Core {
     if ((t.last_report_ms ?? -1) >= started) return
     const active = this.activeTasks(sessionId)
     if (!active.length) return
+    // G11-1：用户直接在成员会话里开的这一轮（追问、闲聊），成员没回报是正常的 ⇒ 不叫醒总管；要紧的由巡检「直接对话」报
+    if (this.directEnabled && this.isUserTurn(sessionId, started)) {
+      this.store.addEvent({ at: bjtIso(this.clock()), session: sessionId, task: active[0]!.id, type: 'reminder/user-turn', data: { started } })
+      return
+    }
     const last = ((await this.port.lastAssistantText(sessionId)) ?? '（没有文字输出）').slice(0, 600)
     const text = `${sessionId} 一轮结束了，但没有用 master_report 回报（在途任务：${active.map(t => `${t.id}[${t.state}]`).join('、')}）。它最后说：\n${last}`
     try {
@@ -547,6 +573,20 @@ export class Core {
   // ---------------- 用户直接对执行会话说话 / 压缩后提醒 ----------------
   /** 用户直接在执行会话里说话，而它有在途任务 → 告诉总管一声（T003 教训：用户叫停而总管不知道）。 */
   onUserMessage(sessionId: string, messageId: string, text: string): void {
+    const row = this.store.getSession(sessionId)
+    if (row?.role === 'exec' && this.directEnabled) {
+      // G11-1：记下来给巡检「直接对话」用（已关闭的会话也记：要报「已不归总管管」）
+      const now = this.clock()
+      this.store.addEvent({ at: bjtIso(now), session: sessionId, task: this.activeTasks(sessionId)[0]?.id ?? null, type: 'user/direct', data: { msg: messageId, ms: now, text: text.slice(0, 300) } })
+      this.store.setMeta(`usermsg:${sessionId}`, String(now))
+      // 宿主先报「开始跑」、后报用户消息的情况：这一轮刚开始、上一轮已经结束 ⇒ 也算用户开的
+      const t = this.store.getTurn(sessionId)
+      const end = Number(this.store.getMeta(`turnend:${sessionId}`) ?? 0)
+      if (t?.started_ms && now - t.started_ms >= 0 && now - t.started_ms <= USER_TURN_WINDOW_MS && end < t.started_ms) {
+        this.store.setMeta(`userturn:${sessionId}`, String(t.started_ms))
+        this.store.setMeta(`usermsg:${sessionId}`, '') // 已经认领了这一轮，别再给下一轮用
+      }
+    }
     if (this.roleOf(sessionId) !== 'exec') return
     const active = this.activeTasks(sessionId)
     if (!active.length) return
@@ -554,6 +594,23 @@ export class Core {
       this.enqueue({ key: `userdirect:${messageId}`, from: SYSTEM_ID, to: this.masterId, task: active[0]!.id, mode: 'inject', label: '用户直接指示',
         text: `用户直接在 ${sessionId} 里说了话（在途任务：${active.map(t => t.id).join('、')}）。如果它改变了在途任务（叫停、改范围、改方向），按新情况调整：\n${text.slice(0, 1500)}` })
     } catch { /* 限频 */ }
+  }
+  /**
+   * G11-1：接下来这一轮算用户开的（看板「回答等你定」直投成员时用：答案是用户给的，成员接着干、不回报也不叫醒总管）。
+   * 和用户直接说话走同一个时间窗：USER_TURN_WINDOW_MS 内开始跑的那一轮。
+   */
+  markUserOpened(sessionId: string): void {
+    if (this.directEnabled) this.store.setMeta(`usermsg:${sessionId}`, String(this.clock()))
+  }
+  /** G11-1：用户开的那一轮结束，成员的回答里写了「改了结论」⇒ 记一笔，巡检报给总管。 */
+  private async noteDirectReply(sessionId: string): Promise<void> {
+    try {
+      const text = (await this.port.lastAssistantText(sessionId)) ?? ''
+      if (!/改了结论/.test(text)) return
+      const last = this.store.events({ session: sessionId, type: 'user/direct', limit: 1 })[0]
+      const msg = last ? JSON.parse(last.data).msg : null
+      this.store.addEvent({ at: bjtIso(this.clock()), session: sessionId, task: last?.task ?? null, type: 'user/direct-changed', data: { msg, excerpt: text.slice(0, 300) } })
+    } catch { /* 读不到最后一句：不影响别的 */ }
   }
   /** 会话刚被压缩：提醒它先读手册、任务书、回忆相关前情。 */
   onCompaction(sessionId: string, marker: string): void {

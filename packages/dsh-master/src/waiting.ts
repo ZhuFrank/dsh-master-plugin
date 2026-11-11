@@ -13,6 +13,12 @@ export class WaitingTracker {
   start(session: string | undefined, kind: WaitKind, label: string | undefined, extra: { since?: number; ref?: string; callId?: string; backfilled?: boolean } = {}): string {
     const sid = session ?? '?'
     if (extra.ref) { const dup = [...this.map.values()].find(w => w.session === sid && w.ref === extra.ref); if (dup) return dup.key }
+    // G11-5：补扫进来的（带 ref）碰上同会话、同类型、同标题、还没有 ref 的实时记录（不限时的选择题宿主不给 callId）⇒ 并进去，补上 ref / callId
+    if (extra.ref && extra.backfilled) {
+      const text = (label ?? '').replace(/\s+/g, ' ').slice(0, 80)
+      const live = [...this.map.values()].find(w => w.session === sid && w.kind === kind && !w.ref && w.label === text)
+      if (live) { live.ref = extra.ref; if (extra.callId) live.callId = extra.callId; return live.key }
+    }
     const key = `${kind}:${sid}:${++this.seq}`
     this.map.set(key, { key, session: sid, kind, label: (label ?? '').replace(/\s+/g, ' ').slice(0, 80), since: extra.since ?? this.clock(), ...(extra.ref ? { ref: extra.ref } : {}), ...(extra.callId ? { callId: extra.callId } : {}), ...(extra.backfilled ? { backfilled: true } : {}) })
     return key

@@ -1,6 +1,6 @@
 {
   "name": "dsh-master",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A project lead for DeepSeek Harness: one master session per project dispatches tasks to member sessions, gates and reviews their work, keeps a devlog memory, guards state and shows a native board. · DSH 项目总管插件：派活、闸门验收、devlog 记忆、守卫、原生看板。",
   "keywords": [
     "dsh-plugin",
@@ -53,7 +53,7 @@
   },
   "engines": {
     "node": ">=22.19.0",
-    "dsh": ">=0.2.1-rc.5 <0.2.2-0"
+    "dsh": ">=0.2.1-rc.5 <0.3.0-0"
   },
   "scripts": {
     "build": "tsdown"

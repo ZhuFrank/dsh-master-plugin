@@ -11,6 +11,12 @@ export interface CdpPage {
   size(w: number, h: number): Promise<void>
   open(url: string, waitMs?: number): Promise<void>
   waitFor<T>(what: string, js: string, timeoutMs?: number): Promise<T>
+  /**
+   * G11-5：用真实鼠标事件（CDP Input.dispatchMouseEvent）点 js 选出来的元素的中心；找不到返回 false。
+   * 比脚本 element.click() 更接近用户操作（点在哪个元素上由页面决定）。注意：0.2.2 选择题卡片上旧测试点不中，
+   * 原因是旧选择器找错了元素（不是选项本身），不是卡片不认脚本点击——反向验证 g115-click 证实过脚本 click 点对元素也行。
+   */
+  click(js: string): Promise<boolean>
   close(): Promise<void>
 }
 export interface Chrome { port: number; page(): Promise<CdpPage>; kill(): Promise<void> }
@@ -43,6 +49,12 @@ export async function launchChrome(opts: { port: number; profileDir: string }): 
           await send('Emulation.setUserAgentOverride', { userAgent: mobile ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' : '' })
         },
         async open(url, waitMs = 6000) { await send('Page.navigate', { url }); await sleep(waitMs) },
+        async click(js) {
+          const c = await ev(`(()=>{const e=(${js});if(!e)return null;e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`)
+          if (!c) return false
+          for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: c.x, y: c.y, button: 'left', clickCount: 1 })
+          return true
+        },
         async waitFor(what, js, timeoutMs = 20_000) {
           const until = Date.now() + timeoutMs; let last: unknown
           while (Date.now() < until) { try { const v = await ev(js); if (v) return v } catch (e) { last = e } await sleep(300) }

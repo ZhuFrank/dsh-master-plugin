@@ -52,11 +52,12 @@ export type PanelView = 'active' | 'archived' | 'all'
 const ms = (iso: string) => Date.parse(iso) || 0
 /** 「进行中 + 结束 7 天内」/「已归档」（结束超过 7 天）；可再按派出日期（北京时间 YYYY-MM-DD，含首尾）筛。 */
 /** openAsk：还挂着没回答的等你定的任务 ID（G7 ⑨：这些任务就算结案超过 7 天也不进已归档，问题不能被藏起来）。 */
-export function filterTasks(tasks: TaskRow[], view: PanelView, now: number, range: { from?: string; to?: string } = {}, openAsk: Set<string> = new Set()): TaskRow[] {
+export function filterTasks(tasks: TaskRow[], view: PanelView, now: number, range: { from?: string; to?: string } = {}, openAsk: Set<string> = new Set(), focus: Set<string> = new Set()): TaskRow[] {
   const day = (iso: string) => iso.slice(0, 10) // 存的就是 +08:00 的 ISO，前 10 位即北京日期
   return tasks.filter(t => {
     const ended = TERMINAL_TASK_STATES.has(t.state)
-    const old = ended && !openAsk.has(t.id) && now - ms(t.updated_at) > PANEL_LIMITS.archiveAfterMs
+    // G11-3：置顶（Focus）的已结任务不归档，一直留在默认视图，直到用户取消置顶
+    const old = ended && !openAsk.has(t.id) && !focus.has(t.id) && now - ms(t.updated_at) > PANEL_LIMITS.archiveAfterMs
     if (view === 'active' && old) return false
     if (view === 'archived' && !old) return false
     if (range.from && day(t.created_at) < range.from) return false
@@ -73,6 +74,8 @@ export type PanelAction =
   | { action: 'confirm_tag'; session: string; turn: number; task: string }
   | { action: 'pause'; reason?: string }
   | { action: 'resume' }
+  /** G11-3：任务置顶到「★ Focus」区（存项目库，手机电脑一致） */
+  | { action: 'focus'; task: string; on: boolean }
 
 const TASK_ID = /^(T\d{3,}|L\d{4}-\d+)$/
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,80}$/
@@ -114,6 +117,12 @@ export function validateAction(body: unknown): PanelAction | { error: string } {
       return { action: 'pause', ...(reason ? { reason } : {}) }
     }
     case 'resume': return { action: 'resume' }
+    case 'focus': {
+      const task = s('task', 20); if (isErr(task)) return task
+      if (!TASK_ID.test(task!)) return { error: 'task 格式不对' }
+      if (typeof b.on !== 'boolean') return { error: 'on 必须是 true / false' }
+      return { action: 'focus', task: task!, on: b.on }
+    }
     default: return { error: `不支持的动作：${String(b.action)}` }
   }
 }

@@ -12,6 +12,10 @@ import { bjtIso, bjtStamp, type Clock } from './time.ts'
 import type { MemoryLayer } from 'dsh-master-devlog'
 
 export interface Finding { key: string; text: string }
+/** G11-1 直接对话：只看最近 24 小时；30 分钟没回才报；对外动作 / 叫停 / 改方向的关键词。 */
+export const DIRECT_WINDOW_MS = 24 * 3600_000
+export const DIRECT_NOREPLY_MS = 30 * 60_000
+export const DIRECT_KEYWORDS = /发布|推送|push|上线|发出去|提交|commit|删除|删掉|删了|叫停|停下|停一下|先别|别做|不做了|不要做|改方向|换个方向|撤回|回滚/i
 export interface PatrolOptions { stallMs: number; longRunMs: number; backupDir?: string; keepBackups?: number
   /** G5-E：在等用户点（审批 / 选择题）的会话；超过 waitMs（默认 10 分钟）报出来 */
   waiting?: () => Array<{ session: string; kind: 'approval' | 'question'; label: string; since: number }>; waitMs?: number
@@ -35,6 +39,7 @@ export class Patrol {
     }
     for (const w of this.opts.waiting?.() ?? []) if (now - w.since > (this.opts.waitMs ?? 10 * 60_000))
       out.push({ key: `waiting:${w.session}:${w.since}`, text: `⏳ ${w.session} 等用户${w.kind === 'approval' ? '批准' : '回答'}已经 ${min(now - w.since)} 分钟：${w.label}（只能去那个会话里点）` })
+    if (this.core.directEnabled) out.push(...this.directFindings(now))
     for (const d of this.store.deliveriesByState('error')) out.push({ key: `delivery-error:${d.key}`, text: `消息投不出去（已放弃重试）：${d.from_id} → ${d.to_id}，${d.key}：${d.last_error}` })
     const asks = this.store.openAsks()
     if (asks.length) out.push({ key: `asks:${asks.map(a => a.id).join(',')}`, text: `有 ${asks.length} 件等用户定：${asks.map(a => `${a.code ?? `#${a.id}`}（${a.task}）${a.question.slice(0, 40)}`).join('；')}` })
@@ -53,6 +58,30 @@ export class Patrol {
       for (const d of drift) out.push({ key: `drift:${d.path}:${d.actual ?? 'missing'}`, text: `带外改动：${d.path}（${d.kind}）${d.problem === 'missing' ? '被删了' : '被插件之外的方式改过'}` })
       const since = Number(this.store.getMeta('patrol_drift_seq') ?? '0')
       for (const a of this.mem.docs.absorbedDrift(since)) out.push({ key: `drift-absorbed:${a.seq}`, text: `带外改动（插件写入时发现并已另存）：${a.path}${a.saved ? `，原内容存在 ${a.saved}` : ''}` })
+    }
+    return out
+  }
+
+  /**
+   * G11-1「直接对话」：用户直接在成员会话里说的话，只在要紧时报给总管（平常的追问不报，省一次叫醒）：
+   * 成员回答里写了「改了结论」；用户原话里有对外动作 / 叫停 / 改方向的词；说了 30 分钟这个会话一轮都没结束、现在又没在跑；会话已关闭。
+   * 只看最近 24 小时；key 带消息 ID，跟别的发现一样按签名只报一次。
+   */
+  private directFindings(now: number): Finding[] {
+    const out: Finding[] = []
+    const changed = new Set(this.store.events({ type: 'user/direct-changed' }).map(e => `${e.session}:${JSON.parse(e.data).msg}`))
+    for (const e of this.store.events({ type: 'user/direct' })) {
+      const d = JSON.parse(e.data) as { msg: string; ms: number; text: string }
+      const s = e.session ?? ''
+      if (now - d.ms > DIRECT_WINDOW_MS) continue
+      const quote = d.text.length > 60 ? `${d.text.slice(0, 60)}…` : d.text
+      const row = this.store.getSession(s)
+      if (!row || row.status !== 'active') { out.push({ key: `direct-closed:${s}:${d.msg}`, text: `用户在 ${s} 里说了话，但这个会话已关闭，已不归总管管：「${quote}」` }); continue }
+      if (changed.has(`${s}:${d.msg}`)) out.push({ key: `direct-changed:${s}:${d.msg}`, text: `用户直接问了 ${s}，它的回答改了已交付的结论（用户问：「${quote}」）；看它最后一轮的回答` })
+      if (DIRECT_KEYWORDS.test(d.text)) out.push({ key: `direct-keyword:${s}:${d.msg}`, text: `用户直接对 ${s} 说了可能涉及对外动作 / 叫停 / 改方向的话：「${quote}」` })
+      const end = Number(this.store.getMeta(`turnend:${s}`) ?? 0)
+      if (now - d.ms > DIRECT_NOREPLY_MS && end < d.ms && this.core.port.status(s) !== 'running')
+        out.push({ key: `direct-noreply:${s}:${d.msg}`, text: `用户在 ${s} 里说了话 ${Math.round((now - d.ms) / 60_000)} 分钟，它还没回（没在跑）：「${quote}」` })
     }
     return out
   }

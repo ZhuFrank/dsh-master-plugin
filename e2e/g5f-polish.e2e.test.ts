@@ -93,9 +93,11 @@ it('G5-F：补扫 / 轻任务验收 / 产物 / 横幅名字 / 窄屏按钮', asy
   // ② 在宿主里回答补扫进来的提问 → 那条消失（没有 waterfall 的 finally，靠宿主事件）
   await p.ev(`(()=>{const b=[...document.querySelectorAll('[data-wait-session]')].find(b=>b.dataset.waitSession===${JSON.stringify(QID)});b.click()})()`)
   await p.waitFor('跳到提问的会话', `[...document.querySelectorAll('button,[role=option],[role=radio]')].some(b=>b.textContent.includes('方案A'))`, 15_000)
-  await p.ev(`(()=>{const c=[...document.querySelectorAll('button,[role=option],[role=radio],label,div')].filter(e=>e.textContent.trim().endsWith('方案A')&&e.textContent.trim().length<=6);const b=c.sort((x,y)=>x.textContent.length-y.textContent.length||y.querySelectorAll('*').length-x.querySelectorAll('*').length)[0];(b.closest('button,[role=option],[role=radio],label')||b).click()})()`); await sleep(600)
+  // 宿主的提问面板：选项是 role=radio、文字前面带编号（「1 方案A」），选中后「提交」才可点。
+  // G11-5：直接点选项本身（role=radio）。旧写法按文字找最短的元素再 closest，在 0.2.2 的新卡片上点到的不是选项，选不中、「提交」一直灰
+  expect(await p.click(`[...document.querySelectorAll('[role=radio],[role=option],button')].find(e=>e.textContent.trim().endsWith('方案A'))`)).toBe(true)
   await p.waitFor('提交可点', `[...document.querySelectorAll('button')].some(b=>b.textContent.trim()==='提交'&&!b.disabled)`, 5000)
-  await p.ev(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='提交').click()`)
+  expect(await p.click(`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='提交')`)).toBe(true)
   await sb.waitFor('补扫进来的提问答完就消失', async () => (await waitingDbg()).every((w: any) => w.session !== QID))
   expect((await waitingDbg()).map((w: any) => w.session)).toEqual(['plain-a'])
 

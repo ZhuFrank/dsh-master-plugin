@@ -8,7 +8,7 @@
  */
 import * as React from 'react'
 import { findPaths } from '../paths.ts'
-import { NEEDS_YOU, needsYou, stateLabel, boardGroups } from '../board-groups.ts'
+import { NEEDS_YOU, needsYou, stateLabel, listGroups } from '../board-groups.ts'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const h = React.createElement
@@ -294,6 +294,8 @@ const CSS = `
 .dshm-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 8px;padding:8px 14px 8px 11px;border-left:3px solid transparent;cursor:pointer;width:100%;text-align:left;background:transparent;border-top:0;border-right:0;border-bottom:0;color:inherit;font:inherit}
 .dshm-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8882)}
 .dshm-row.need{border-left-color:var(--dshm-wait)}
+.dshm-rowwrap{display:flex;align-items:stretch}.dshm-rowwrap>.dshm-row{flex:1;min-width:0}.dshm-focus{border:0;background:none;color:var(--dshm-mute);cursor:pointer;padding:0 12px;font-size:16px}.dshm-focus.on{color:var(--dshm-wait)}.dshm-grp-btn{display:block;width:100%;text-align:left;border:0;background:none;cursor:pointer;font:inherit;color:inherit}
+.dshm-sb{padding:6px 14px 8px;border-bottom:1px solid var(--dshm-line);display:flex;flex-direction:column;gap:4px}.dshm-sb [data-live=running]{border-color:var(--dshm-run)}.dshm-sb .cnt-on{border-color:var(--dshm-wait);color:var(--dshm-wait)}.dshm-sb .cnt-bad{border-color:var(--dshm-bad);color:var(--dshm-bad)}
 .dshm-rid{font-weight:700;white-space:nowrap}.dshm-rt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dshm-rm{grid-column:2/4;font-size:11px;color:var(--dshm-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dshm-chip{display:inline-block;padding:0 7px;border-radius:9px;font-size:11px;color:#fff;white-space:nowrap;line-height:18px}
@@ -445,6 +447,9 @@ function Board({ sessionId }: { sessionId?: string }) {
       : h(React.Fragment, null,
         h('div', { className: 'dshm-hd' }, h('h2', null, '总管看板'),
           h('div', { className: 'dshm-meta', 'data-testid': 'dshm-board-meta' }, st.data ? `${st.data.project ? `项目 ${st.data.project.id} · ` : ''}总管 ${({ running: '忙', idle: '空闲', cold: '未加载' } as any)[sessions.find(s => s.id === master)?.live] ?? '—'} · 北京时间 ${showTime(st.data.now)} · ${sessions.filter(s => s.role === 'exec' && s.status !== 'closed').length} 个${st.data.project ? '成员' : '执行会话'}` : '加载中…')),
+        // G11-2 总管状态栏（忙闲 + 正在什么、下次保底、三个可点的计数、执行会话块）
+        st.data?.statusBar && h(StatusBar, { sb: st.data.statusBar, now: st.data.now, waiting: st.data.waiting ?? [], tasks: st.data.tasks ?? [],
+          onAsks: () => setMine(true), onTask: (task: string) => setNav({ view: 'task', task }) }),
         // G5-F ⑧ 窄屏折行，最右的「会话（N）」「通知」不会被截掉（以前是横向滑、没提示）
         h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-board-tools', role: 'toolbar' },
           !bctx.readonly && h('button', { className: 'dshm-btn go', onClick: () => openSessionWith(master, '新任务：'), title: '打开总管会话并预填「新任务：」，标题由总管起' }, '＋ 新任务'),
@@ -458,6 +463,28 @@ function Board({ sessionId }: { sessionId?: string }) {
         h('div', { className: 'dshm-body' }, n.view === 'sessions' ? h(SessionsList, { sessions, now: st.data?.now, unenrolled: st.data?.unenrolled ?? [] })
           : h(React.Fragment, null, h(TaskList, { data: st.data, mine, archived, onChanged: st.reload }), h(Unenrolled, { list: st.data?.unenrolled ?? [], now: st.data?.now }))))))
 }
+/**
+ * G11-2 总管状态栏。「正在」只有工具名 + 说明（服务端已裁好，见 status-bar.ts）；计数可点：
+ * 等你定 ⇒ 只看等我；等你点 ⇒ 打开第一个在等你点的会话；受阻 ⇒ 打开第一件受阻的任务。成员块点了打开那个会话。
+ */
+function StatusBar({ sb, now, waiting, tasks, onAsks, onTask }: { sb: any; now?: string; waiting: any[]; tasks: any[]; onAsks: () => void; onTask: (task: string) => void }) {
+  const live = (x: string) => (({ running: '忙', idle: '空闲', cold: '未加载' } as any)[x] ?? '—')
+  const blocked = tasks.find((t: any) => t.state === '受阻')
+  const count = (key: string, label: string, n: number, onClick?: () => void) => h('button', { key, className: `dshm-btn${n ? (key === 'blocked' ? ' cnt-bad' : ' cnt-on') : ''}`, 'data-count': key, 'data-n': n, disabled: !n || !onClick, onClick }, `${label} ${n}`)
+  return h('div', { className: 'dshm-sb', 'data-testid': 'dshm-status-bar', role: 'status' },
+    h('div', { className: 'dshm-meta', 'data-testid': 'dshm-sb-master', 'data-live': sb.master.live },
+      `总管 ${live(sb.master.live)}`,
+      sb.master.doing ? ` · ${sb.master.live === 'running' ? '正在' : '上一步'}：${sb.master.doing}${sb.master.doingAt ? `（${showTime(sb.master.doingAt, now)}）` : ''}` : '',
+      h('span', { 'data-testid': 'dshm-sb-next' }, ` · 下次保底 ${sb.nextSchedule ? showTime(sb.nextSchedule, now) : '—'}`)),
+    h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-sb-counts' },
+      count('asks', '等你定', sb.counts.asks, onAsks),
+      count('waiting', '等你点', sb.counts.waiting, waiting[0] ? () => openSessionWith(waiting[0].session) : undefined),
+      count('blocked', '受阻', sb.counts.blocked, blocked ? () => onTask(blocked.id) : undefined)),
+    sb.members.length > 0 && h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-sb-members' },
+      ...sb.members.map((m: any) => h('button', { key: m.id, className: 'dshm-btn', 'data-member': m.id, 'data-live': m.live, onClick: () => openSessionWith(m.id), title: m.title },
+        `${m.id} ${live(m.live)}${m.tasks.length ? ` · ${m.tasks.map((t: any) => `${t.id}${t.gate ? `/${t.gate}` : ''}${t.state === '受阻' ? '（受阻）' : ''}`).join('、')}` : ' · 没活'}`))))
+}
+
 /** G6-3 未入编：项目工作区里用别的预设建的会话（看得到，但不归总管管）。 */
 function Unenrolled({ list, now }: { list: any[]; now?: string }) {
   if (!list.length) return null
@@ -471,24 +498,42 @@ let lastUnitKey: string | undefined
 /** 最近一次看板拉到的编号表（用户消息里的标签悬停时用；拿不到就只显示编号）。 */
 let lastRefs: { gateIndex: Record<string, any>; askIndex: Record<string, any> } = { gateIndex: {}, askIndex: {} }
 
+/** G11-3：组的折叠状态（只是显示偏好，存浏览器、每台设备各一份；Focus 本身存项目库）。读写失败就当没有。 */
+const COLLAPSE_KEY = 'dshm.collapsed.v1'
+const loadCollapsed = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}') ?? {} } catch { return {} } }
+const saveCollapsed = (v: Record<string, boolean>) => { try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(v)) } catch { /* 隐私模式等 */ } }
+
 function TaskList({ data, mine, archived, onChanged }: any) {
   const tasks: any[] = data?.tasks ?? []
   const asks: any[] = data?.asks ?? []
-  const groups: Array<[string, any[]]> = boardGroups(tasks, { mine, archived })
+  const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(loadCollapsed)
+  // G11-3：★ Focus → 等你处理 → 最近 5 天按日期 → 更早（默认折叠）；标题点了收起 / 展开
+  const groups = listGroups(tasks, { mine, archived, today: String(data?.now ?? '').slice(0, 10) })
+  const isClosed = (g: any) => collapsed[g.key] ?? g.collapsedByDefault
+  const toggle = (g: any) => setCollapsed(c => { const v = { ...c, [g.key]: !isClosed(g) }; saveCollapsed(v); return v })
   return h(React.Fragment, null,
-    ...groups.flatMap(([name, list]) => list.length ? [h('div', { key: name, className: 'dshm-grp' }, `${name} · ${list.length}`), ...list.flatMap(t => [
-      h(TaskRow, { key: t.id, t, now: data?.now }),
-      ...asks.filter(a => a.task === t.id).map(a => h(AskCard, { key: `ask-${a.id}`, a, onChanged })),
-    ])] : []),
+    ...groups.flatMap(g => [h('button', { key: `grp-${g.key}`, className: 'dshm-grp dshm-grp-btn', 'data-group': g.key, 'aria-expanded': !isClosed(g), onClick: () => toggle(g) },
+      `${isClosed(g) ? '▸' : '▾'} ${g.name} · ${g.list.length}`),
+      ...(isClosed(g) ? [] : g.list.flatMap((t: any) => [
+        h(TaskRow, { key: t.id, t, now: data?.now, onChanged }),
+        ...asks.filter(a => a.task === t.id).map(a => h(AskCard, { key: `ask-${a.id}`, a, onChanged })),
+      ]))]),
     tasks.length === 0 && h('div', { className: 'dshm-meta', style: { padding: '12px 14px' } }, archived ? '没有已归档的任务' : '这个视图里没有任务'))
 }
 
-function TaskRow({ t, now }: any) {
+function TaskRow({ t, now, onChanged }: any) {
+  const b = useBoard()
   const need = needsYou(t)
   const label = stateLabel(t)
-  return h('button', { className: `dshm-row${need ? ' need' : ''}`, 'data-task': t.id, onClick: () => setNav({ view: 'task', task: t.id }) },
-    h('span', { className: 'dshm-rid' }, t.id), h('span', { className: 'dshm-rt' }, t.title), h('span', { className: `dshm-chip ${stateTone(t.openAsks ? '等你定' : t.state)}` }, label),
-    h('span', { className: 'dshm-rm' }, `${t.gate ? `${t.gate} · ` : ''}${t.owner} · ${showTime(t.updated, now)}${t.openAsks ? ` · 等你定 ${t.openAsks}` : ''}`))
+  const [err, setErr] = React.useState<string>()
+  // G11-3：置顶 / 取消置顶（存项目库，手机电脑一致）
+  const focus = async () => { setErr(undefined); try { await postJson(withSession('/api/dsh-master/action', b.sid), { action: 'focus', task: t.id, on: !t.focus }); onChanged?.() } catch (e: any) { setErr(e.message) } }
+  return h('div', { className: 'dshm-rowwrap' },
+    h('button', { className: `dshm-row${need ? ' need' : ''}`, 'data-task': t.id, onClick: () => setNav({ view: 'task', task: t.id }) },
+      h('span', { className: 'dshm-rid' }, t.id), h('span', { className: 'dshm-rt' }, t.title), h('span', { className: `dshm-chip ${stateTone(t.openAsks ? '等你定' : t.state)}` }, label),
+      h('span', { className: 'dshm-rm' }, `${t.gate ? `${t.gate} · ` : ''}${t.owner} · ${showTime(t.updated, now)}${t.openAsks ? ` · 等你定 ${t.openAsks}` : ''}`)),
+    !b.readonly && h('button', { className: `dshm-focus${t.focus ? ' on' : ''}`, 'data-focus-task': t.id, 'aria-pressed': !!t.focus, onClick: focus, title: t.focus ? '取消置顶' : '置顶到 ★ Focus 区' }, t.focus ? '★' : '☆'),
+    err && h('div', { className: 'dshm-err' }, err))
 }
 
 function AskCard({ a, onChanged }: any) {
@@ -581,7 +626,9 @@ function TaskView({ task, sessions, now, onChanged }: any) {
         : h('h2', null, task)),
     h('div', { className: 'dshm-tools wrap', role: 'toolbar', 'data-testid': 'dshm-detail-tools' },
       t && t.owner !== b.master && h('button', { className: 'dshm-btn primary', 'data-testid': 'dshm-open-exec', onClick: () => openSessionWith(t.owner), title: '干活的过程（思考、工具调用）在执行会话里看' }, `打开执行会话 ${t.owner} ↗`),
-      h('button', { className: 'dshm-btn', onClick: () => openSessionWith(b.master, `@${task} `) }, `在对话里提到 ${task} ↗`),
+      // G11-1：打开该找的人（负责的在岗成员；没有 / 已关闭 / 负责人是总管 ⇒ 总管），预填 @任务
+      h('button', { className: 'dshm-btn', 'data-testid': 'dshm-mention-task', 'data-talk-to': t?.talkTo ?? b.master, onClick: () => openSessionWith(t?.talkTo ?? b.master, `@${task} `),
+        title: t?.talkTo && t.talkTo !== b.master ? `直接跟负责的 ${t.talkTo} 说（不经总管）` : '在总管会话里说' }, `在对话里提到 ${task} ↗`),
       h('button', { className: 'dshm-btn', 'aria-pressed': !only, onClick: () => setOnly(false) }, '全部'),
       h('button', { className: 'dshm-btn', 'aria-pressed': only, onClick: () => setOnly(true) }, '只看回报 / 验收'),
       h('button', { className: 'dshm-btn', 'aria-pressed': msgs, 'data-testid': 'dshm-toggle-msgs', onClick: () => setMsgs(x => !x), title: '插件在总管和执行会话之间转交的原文（派活、回报、提醒）；内容和对应的对话轮次、回报重复，默认收起' }, msgs ? '转交消息：开' : '转交消息：关')),

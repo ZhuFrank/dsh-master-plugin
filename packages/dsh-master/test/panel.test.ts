@@ -96,6 +96,8 @@ describe('面板 · 动作效果', () => {
   })
   it('answer：等你定标为已回答、告诉总管；回答过的不能再答', async () => {
     const { id } = await s.core.askUser({ task: 'L1103-1', question: '用 A 还是 B？', options: ['A', 'B'] })
+    // G11-1 起负责人在岗时答案直投成员（见 g11.test.ts）；这里关掉负责人，测退回总管的那条路
+    s.store.closeSession('exec-a', new Date().toISOString())
     await s.panel.act({ action: 'answer', ask: id, answer: 'A' })
     expect(s.store.getAsk(id)).toMatchObject({ state: 'answered', answer: 'A' })
     expect(s.pport.prompts.at(-1)!.content[0].text).toContain('回答：A')

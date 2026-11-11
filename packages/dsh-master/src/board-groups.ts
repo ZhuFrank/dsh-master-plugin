@@ -19,3 +19,38 @@ export function boardGroups<T extends BoardTask>(tasks: T[], opts: { mine: boole
   if (opts.mine) return [['等你处理', need]]
   return [['等你处理', need], ['进行中', tasks.filter(t => !t.closed && !needsYou(t))], ['已结束（近 7 天）', tasks.filter(t => t.closed && !needsYou(t))]]
 }
+
+/**
+ * G11-3 默认视图的分组（照本机看板 11-06 包：Focus 区 + 默认最近 5 天 + 按日期折叠）：
+ * ★ Focus（用户置顶的）→ 等你处理 → 最近 RECENT_DAYS 天按更新日期分组（新的在前）→ 更早（默认折叠；没结的老任务也在这里，不丢）。
+ * 每个任务只出现一次；组内保持传进来的顺序（服务端已按更新时间倒序）；空组不出。
+ * 只看等我 / 已归档沿用原来的一组。`updated` 是 'YYYY-MM-DD HHMM'（北京时间），`today` 是 'YYYY-MM-DD'。
+ */
+export const RECENT_DAYS = 5
+export interface ListTask extends BoardTask { focus?: boolean; updated: string }
+export interface ListGroup<T> { key: string; name: string; list: T[]; collapsedByDefault: boolean }
+
+const dayNo = (ymd: string): number => { const [y, m, d] = ymd.split('-').map(Number); return Math.round(Date.UTC(y!, m! - 1, d!) / 86400_000) }
+
+export function listGroups<T extends ListTask>(tasks: T[], opts: { mine: boolean; archived: boolean; today: string }): Array<ListGroup<T>> {
+  const g = (key: string, name: string, list: T[], collapsedByDefault = false): ListGroup<T> => ({ key, name, list, collapsedByDefault })
+  if (opts.archived) return [g('archived', '已归档（结束超过 7 天）', tasks)]
+  if (opts.mine) return [g('need', '等你处理', tasks.filter(needsYou))]
+  const focus = tasks.filter(t => t.focus)
+  const rest = tasks.filter(t => !t.focus)
+  const need = rest.filter(needsYou)
+  const others = rest.filter(t => !needsYou(t))
+  const today = dayNo(opts.today)
+  const days = new Map<string, T[]>(); const older: T[] = []
+  for (const t of others) {
+    const ymd = t.updated.slice(0, 10)
+    const ago = today - dayNo(ymd)
+    if (ago >= 0 && ago < RECENT_DAYS) { const l = days.get(ymd) ?? []; l.push(t); days.set(ymd, l) } else older.push(t)
+  }
+  const label = (ymd: string) => { const ago = today - dayNo(ymd); return `${ymd.slice(5)}${ago === 0 ? ' 今天' : ago === 1 ? ' 昨天' : ''}` }
+  return [
+    g('focus', '★ Focus', focus), g('need', '等你处理', need),
+    ...[...days.keys()].sort().reverse().map(d => g(`day:${d}`, label(d), days.get(d)!)),
+    g('older', '更早', older, true),
+  ].filter(x => x.list.length)
+}

@@ -6,7 +6,7 @@
 
 ![The dsh-master board: what needs you, a question with clickable answers, finished work (demo project, mock model)](https://raw.githubusercontent.com/ZhuFrank/dsh-master-plugin/main/docs/images/board.png)
 
-> Status: early (0.1.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`. DSH 0.2.2 changed the schedule API and turned off the file-observation guard by default, so 0.2.2 is not supported yet. The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
+> Status: early (0.2.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`; the full test suite also passes on DSH `0.2.2-rc.1` (Node 24). On DSH 0.2.2 the host's "read before write" file guard is off by default (see [Requirements](#requirements)). The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
 
 ## Why
 
@@ -31,11 +31,15 @@ A single DSH session works well for a single task. Once you have several streams
 | **Pause / resume** | One button on the board. While paused, the project's schedule is removed, patrol only takes backups, and members finishing a turn without reporting no longer trigger reminders. Talking to the master directly still works. |
 | **Heavy-job queue** | `heavy_run` queues renders, transcriptions or local inference behind a free-memory check, one job at a time, and notifies the session when the job finishes. |
 | **Native board** | A right-side panel with lists, task detail, timeline, products preview, "needs you" and "waiting for your click" banners, and `@task` mentions in the composer. Your turns are attributed to tasks automatically. |
+| **Talk to a member directly** *(0.2.0)* | You can talk to a member in its own session without waking the master: a turn you open does not trigger the "no report" reminder, answering a *needs you* card on the board goes straight to the member in charge (the master only gets a note), and patrol tells the master about direct conversations that change a conclusion or need its decision. Set `directToMember: false` for the old behaviour. |
+| **Master status bar** *(0.2.0)* | The top of the board shows what the master is doing (tool name plus the model's one-line description, never the full command), when the next safety-net run is due, and three clickable counts: needs you, waiting for your click, blocked. Members on duty are listed with their open tasks. |
+| **Focus & date groups** *(0.2.0)* | Star a task to pin it in a ★ Focus group. The default list shows the last 5 days grouped by date, older work is collapsed, and each group can be folded. |
 
 ## Requirements
 
-- DeepSeek Harness **`dsh web`**, version `>=0.2.1-rc.5 <0.2.2-0`, i.e. the 0.2.1 line (declared in `engines.dsh`; DSH refuses to install or load it outside this range, including 0.2.2 pre-releases).
-- Node.js **>= 22.19** (the plugin uses the built-in `node:sqlite`).
+- DeepSeek Harness **`dsh web`**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5` and `0.2.2-rc.1`.
+- Node.js **>= 22.19** (the plugin uses the built-in `node:sqlite`). DSH 0.2.2 itself needs Node >= 24.9.
+- On DSH 0.2.2, the host's "read before write" guard (`fs-observation-policy` in the `dsh-base` bundle) is **off by default**. While it is off, two members editing the same file are not stopped by the host, so the plugin's "optimistic lock" conflict notice does not fire. Task claims (a member writing into another task's claimed paths is blocked) are the plugin's own and still work. To turn the guard on, set that entry to `disabled: false` in your profile; this applies to every session in the profile, so the plugin does not change it for you.
 - macOS is the only platform tested so far.
 
 ## Install
@@ -45,7 +49,7 @@ A single DSH session works well for a single task. Once you have several streams
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.1.0/dsh-master-0.1.0.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
 ```
 
 Start `dsh web` again and reload the page.
@@ -55,7 +59,7 @@ Start `dsh web` again and reload the page.
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # create the profile once
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.1.0/dsh-master-0.1.0.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
 dsh --profile master --port 3090                                            # then open http://127.0.0.1:3090
 ```
 
@@ -98,6 +102,7 @@ Settings go in your profile's `cordis.patch.yml`:
 | `scheduleEverySeconds` | `21600` | Interval of the safety-net host schedule for each master. `0` disables it. |
 | `patrol.intervalMs` | `600000` | In-plugin patrol interval. |
 | `idleGraceMs` | `120000` | How long after a member's turn ends without a report before the master is reminded. |
+| `directToMember` | `true` | Talking to members directly (see *Talk to a member directly*). `false` restores the 0.1.x behaviour: every user turn and board answer goes through the master. |
 | `secretPaths` | `[$DSH_HOME/logs]` | Directories that non-master sessions may not read (the DSH log contains the login token). |
 | `stateDir` | `$DSH_HOME/dsh-master` | Plugin state: SQLite databases, docs, backups. |
 | `legacy` | auto | The pre-project "single master" mode. New installs leave it `off`; set `active` only if you want one global master that is not tied to a project. |

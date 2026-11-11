@@ -225,6 +225,15 @@ export class Store {
   // ---- meta ----
   getMeta(k: string): string | undefined { return (this.db.prepare('SELECT v FROM meta WHERE k = ?').get(k) as { v: string } | undefined)?.v }
   setMeta(k: string, v: string): void { this.db.prepare('INSERT INTO meta(k, v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(k, v) }
+  /** G11-3 Focus：meta 里 `focus:<任务>` = 置顶时间（ISO）；取消就删掉这一行。 */
+  setFocus(task: string, at: string | null): void {
+    if (at) this.setMeta(`focus:${task}`, at)
+    else this.db.prepare('DELETE FROM meta WHERE k = ?').run(`focus:${task}`)
+  }
+  focusMap(): Map<string, string> {
+    const rows = this.db.prepare("SELECT k, v FROM meta WHERE k LIKE 'focus:%'").all() as Array<{ k: string; v: string }>
+    return new Map(rows.map(r => [r.k.slice('focus:'.length), r.v]))
+  }
 
   // ---- heavy jobs ----
   addHeavyJob(j: Omit<HeavyJobRow, 'id' | 'state' | 'exit_code' | 'started_at' | 'ended_at'>): number {

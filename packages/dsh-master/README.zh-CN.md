@@ -11,7 +11,7 @@
 
 ![总管看板：等你处理、可点选的提问、已结束的任务（演示项目，假模型）](https://raw.githubusercontent.com/ZhuFrank/dsh-master-plugin/main/docs/images/board.png)
 
-> 现状：早期版本（0.1.x）。在 macOS + DSH `0.2.1-rc.5` 上开发、日常使用。DSH 0.2.2 改了定时服务的接口，还默认关掉了「写之前先读」的文件防护，所以暂时不支持 0.2.2。界面、角色守则和工具说明都是中文，时间统一显示北京时间（UTC+8）。
+> 现状：早期版本（0.2.x）。在 macOS + DSH `0.2.1-rc.5` 上开发、日常使用；全套测试在 DSH `0.2.2-rc.1`（Node 24）上也通过。DSH 0.2.2 默认关掉了宿主「写之前先读」的文件防护，见[环境要求](#环境要求)。界面、角色守则和工具说明都是中文，时间统一显示北京时间（UTC+8）。
 
 ## 为什么做它
 
@@ -41,11 +41,15 @@ dsh-master 把这些记账的活交给插件：
 | **暂停 / 恢复** | 看板上一个按钮。暂停时删掉这个项目的定时保底；巡检只做备份；成员一轮结束没回报也不提醒总管。你直接找总管照常能干活。 |
 | **重活排队** | `heavy_run` 把渲染、转写、本地推理这类重活排队：先看可用内存，同一时间只跑一件，跑完通知发起的会话。 |
 | **原生看板** | 右侧栏：列表、任务详情、时间线、产物预览、「等你定」和「等你点」横幅；输入框里能 `@任务`；每一轮对话会自动归到对应的任务。 |
+| **直接找成员**（0.2.0） | 你可以在成员自己的会话里直接跟它说话，不叫醒总管：你开的那一轮不触发「没回报」提醒；在看板上回答「等你定」卡片，答案直接交给负责的成员，总管只收一条记录；成员改了结论、或者遇到要总管拍板的事，巡检会告诉总管。写 `directToMember: false` 回到旧行为。 |
+| **总管状态栏**（0.2.0） | 看板顶上显示总管正在做什么（工具名加模型写的一句说明，不显示命令全文）、下次定时保底的时间，以及三个可点的计数：等你定、等你点、受阻。在岗的成员和它们手上没结的任务也列在这里。 |
+| **Focus 区与按日期分组**（0.2.0） | 给任务点 ☆ 就置顶到「★ Focus」组。默认列表按日期分组显示最近 5 天，更早的折叠起来，每组都能收起 / 展开。 |
 
 ## 环境要求
 
-- DeepSeek Harness 的 **`dsh web`**，版本 `>=0.2.1-rc.5 <0.2.2-0`，也就是 0.2.1 这一系列。这个范围写在 `engines.dsh` 里，超出范围（包括 0.2.2 的预发布版）DSH 会拒绝安装和加载。
-- Node.js **>= 22.19**（用到内置的 `node:sqlite`）。
+- DeepSeek Harness 的 **`dsh web`**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5` 和 `0.2.2-rc.1` 上测过。
+- Node.js **>= 22.19**（用到内置的 `node:sqlite`）。DSH 0.2.2 本身要 Node >= 24.9。
+- DSH 0.2.2 上，宿主「写之前先读」的文件防护（`dsh-base` 组合包里的 `fs-observation-policy`）**默认关**。关着的时候，两个成员同时改同一个文件，宿主不会拦下后写的，插件的「乐观锁冲突提示」也就不起作用；插件自己的「认领」（成员写进别的任务认领的范围会被拦下）不受影响。要这道防护，把 profile 里那一行改成 `disabled: false`。它对 profile 里的所有会话生效，所以插件不替你改。
 - 目前只在 macOS 上测过。
 
 ## 安装
@@ -55,7 +59,7 @@ dsh-master 把这些记账的活交给插件：
 **A. 装进日常 profile（`web`）。** 先停掉 `dsh web`，然后运行：
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.1.0/dsh-master-0.1.0.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
 ```
 
 再启动 `dsh web`，刷新网页。
@@ -65,7 +69,7 @@ dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/relea
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # 第一次：建 profile
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.1.0/dsh-master-0.1.0.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
 dsh --profile master --port 3090                                            # 打开 http://127.0.0.1:3090
 ```
 
@@ -108,6 +112,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 | `scheduleEverySeconds` | `21600` | 每个总管的定时保底间隔；`0` 关闭。 |
 | `patrol.intervalMs` | `600000` | 插件内巡检的间隔。 |
 | `idleGraceMs` | `120000` | 成员一轮结束、没回报，过多久提醒总管。 |
+| `directToMember` | `true` | 允许直接找成员（见「直接找成员」）。写 `false` 回到 0.1.x 的做法：你的每一轮话和看板上的回答都经总管。 |
 | `secretPaths` | `[$DSH_HOME/logs]` | 非总管会话不能读的目录（dsh.log 里有登录令牌）。 |
 | `stateDir` | `$DSH_HOME/dsh-master` | 插件状态目录：SQLite 数据库、文档、备份。 |
 | `legacy` | 自动 | 不分项目、全局只有一个总管的早期形态。新装默认 `off`；只有想要一个不绑项目的全局总管时，才写 `active`。 |

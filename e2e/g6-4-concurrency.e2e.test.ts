@@ -12,9 +12,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { it, expect, afterAll } from 'vitest'
-import { createSandbox, launchChrome, freePort, type Sandbox, type CdpPage, E2E_WORK, E2E_SANDBOX } from '@dsh-master/testkit'
+import { createSandbox, launchChrome, freePort, type Sandbox, type CdpPage, E2E_WORK, E2E_SANDBOX, hostFsObservationOn, dshBasePatch } from '@dsh-master/testkit'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
+/** G11-5：宿主的「写之前先读」防护开没开（0.2.1 开、0.2.2 默认关；Frank 定由不由插件打开之前，按宿主实际设置断言） */
+const FS_POLICY = hostFsObservationOn() !== false
 const OUT = path.join(ROOT, 'docs/g6-4'); fs.mkdirSync(OUT, { recursive: true })
 const call = (tool: string, args: unknown) => `CALL ${tool} ${JSON.stringify(args)}`
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -72,14 +74,21 @@ it('G6-4：认领、乐观锁、成员不提交、产物目录与往外写', asy
   await run('alpha.y', 'read', { file_path: A('shared.txt') })
   await run('alpha.y', 'edit', { file_path: A('shared.txt'), old_string: 'v1\n', new_string: 'v1\nY 加的一行\n' })
   await run('alpha.x', 'edit', { file_path: A('shared.txt'), old_string: 'v1\n', new_string: 'v1\nX 加的一行\n' })
-  expect(fs.readFileSync(A('shared.txt'), 'utf8')).toBe('v1\nY 加的一行\n') // X 的没写进去，Y 的没被冲掉
-  const hx = await hist('alpha.x')
-  expect(hx).toMatch(/changed since it was read|FS_STALE_VERSION/)
-  expect(hx).toContain('[dsh-master 提示] 这个文件在你读过以后被改过了')
-  expect((await events('fs/conflict')).map((e: any) => [e.task, e.session, e.data.kind, e.data.file])).toEqual([['L1106-1', 'alpha.x', 'stale', 'shared.txt']])
-  await run('alpha.x', 'read', { file_path: A('shared.txt') })
-  await run('alpha.x', 'edit', { file_path: A('shared.txt'), old_string: 'Y 加的一行\n', new_string: 'Y 加的一行\nX 加的一行\n' })
-  expect(fs.readFileSync(A('shared.txt'), 'utf8')).toBe('v1\nY 加的一行\nX 加的一行\n')
+  if (FS_POLICY) {
+    expect(fs.readFileSync(A('shared.txt'), 'utf8')).toBe('v1\nY 加的一行\n') // X 的没写进去，Y 的没被冲掉
+    const hx = await hist('alpha.x')
+    expect(hx).toMatch(/changed since it was read|FS_STALE_VERSION/)
+    expect(hx).toContain('[dsh-master 提示] 这个文件在你读过以后被改过了')
+    expect((await events('fs/conflict')).map((e: any) => [e.task, e.session, e.data.kind, e.data.file])).toEqual([['L1106-1', 'alpha.x', 'stale', 'shared.txt']])
+    await run('alpha.x', 'read', { file_path: A('shared.txt') })
+    await run('alpha.x', 'edit', { file_path: A('shared.txt'), old_string: 'Y 加的一行\n', new_string: 'Y 加的一行\nX 加的一行\n' })
+    expect(fs.readFileSync(A('shared.txt'), 'utf8')).toBe('v1\nY 加的一行\nX 加的一行\n')
+  } else {
+    // G11-5：宿主没开「写之前先读」（DSH 0.2.2 默认关）⇒ 宿主不拦，两次都写进去；插件也不该凭空记冲突
+    console.log('G6-4：宿主的 fs-observation-policy 没开（%s），乐观锁那一段按「宿主不拦」断言', dshBasePatch())
+    expect(fs.readFileSync(A('shared.txt'), 'utf8')).toBe('v1\nX 加的一行\nY 加的一行\n')
+    expect(await events('fs/conflict')).toEqual([])
+  }
 
   // ── 成员提交：被拦，仓库没有新提交；只读的 git status 照用 ──
   const before = commits()
@@ -137,10 +146,11 @@ it('G6-4：认领、乐观锁、成员不提交、产物目录与往外写', asy
     await p.ev(`${board}.querySelector('[data-task="L1106-1"]').click()`)
     await p.waitFor('任务详情', `!!document.querySelector('[data-testid=dshm-claims]')`, 10_000)
     expect(await p.ev<string>(`document.querySelector('[data-testid=dshm-claims]').innerText`)).toMatch(/^认领（已失效）：\s*src\/a/)
-    await p.waitFor('时间线事件', `document.querySelector('[data-testid=dshm-timeline]')?.innerText.includes('被宿主拦下')`, 10_000)
+    // G11-5：「被宿主拦下」只在宿主开了写前先读防护时才有（0.2.2 默认关）；认领被拦（「被拦下：在 …认领的」）两种情况都有
+    await p.waitFor('时间线事件', `document.querySelector('[data-testid=dshm-timeline]')?.innerText.includes(${JSON.stringify(FS_POLICY ? '被宿主拦下' : '认领的 src/a 里')})`, 10_000)
     const tl = await p.ev<string>(`document.querySelector('[data-testid=dshm-timeline]').innerText`)
     expect(tl).toContain('alpha.y 想改 src/a/hack.txt，被拦下：在 L1106-1（alpha.x）认领的 src/a 里')
-    expect(tl).toContain('alpha.x 改 shared.txt 被宿主拦下：读过以后别人改过（乐观锁），要重读再改')
+    if (FS_POLICY) expect(tl).toContain('alpha.x 改 shared.txt 被宿主拦下：读过以后别人改过（乐观锁），要重读再改')
     expect(tl).toContain('alpha.x 想动 git，被拦下（成员不提交）')
     await p.ev(`document.querySelector('[data-testid=dshm-claims]').scrollIntoView({block:'start'})`); await sleep(300)
     await p.shot(path.join(OUT, `${w}-task-claims.png`))
