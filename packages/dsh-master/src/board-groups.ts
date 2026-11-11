@@ -10,6 +10,16 @@ export interface BoardTask { id: string; state: string; closed: boolean; openAsk
 
 export const needsYou = (t: BoardTask): boolean => t.openAsks > 0 || (!t.closed && NEEDS_YOU.has(t.state))
 
+/**
+ * G12：所属任务不在当前列表里的「等你定」——总管先问后派（任务还没建），或者任务被这个视图筛掉了。
+ * 以前卡片只挂在任务下面渲染，这些问题看板上看不到、答不了，状态栏「等你定」却把它们算进去了（计数对不上）。
+ * 看板把它们放在列表最前面单独一块「还没建任务的提问」。匹配规则和挂在任务下面完全一样（任务号精确相等），两边不会漏、不会重。
+ */
+export function orphanAsks<A extends { task: string }>(asks: A[], tasks: Array<{ id: string }>): A[] {
+  const ids = new Set(tasks.map(t => t.id))
+  return asks.filter(a => !ids.has(a.task))
+}
+
 /** 卡片上的状态标签：有没回答的等你定时写「等你定」；任务已结案就连结案状态一起写（「完成 · 等你定」），不让 Q 的状态顶掉任务状态。 */
 export const stateLabel = (t: BoardTask): string => t.openAsks ? (t.closed ? `${t.state} · 等你定` : '等你定') : t.state
 

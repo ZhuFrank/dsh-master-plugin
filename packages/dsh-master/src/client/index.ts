@@ -8,7 +8,7 @@
  */
 import * as React from 'react'
 import { findPaths } from '../paths.ts'
-import { NEEDS_YOU, needsYou, stateLabel, listGroups } from '../board-groups.ts'
+import { NEEDS_YOU, needsYou, stateLabel, listGroups, orphanAsks } from '../board-groups.ts'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const h = React.createElement
@@ -511,14 +511,20 @@ function TaskList({ data, mine, archived, onChanged }: any) {
   const groups = listGroups(tasks, { mine, archived, today: String(data?.now ?? '').slice(0, 10) })
   const isClosed = (g: any) => collapsed[g.key] ?? g.collapsedByDefault
   const toggle = (g: any) => setCollapsed(c => { const v = { ...c, [g.key]: !isClosed(g) }; saveCollapsed(v); return v })
+  // G12：所属任务不在这个列表里的等你定（先问后派 / 任务被筛掉）单独放最前面，不然看不到、答不了
+  const orphans = archived ? [] : orphanAsks(asks, tasks)
+  const og = { key: 'orphan-asks', collapsedByDefault: false }
   return h(React.Fragment, null,
+    ...(orphans.length ? [h('button', { key: 'grp-orphan-asks', className: 'dshm-grp dshm-grp-btn', 'data-group': og.key, 'aria-expanded': !isClosed(og), onClick: () => toggle(og) },
+      `${isClosed(og) ? '▸' : '▾'} 还没建任务的提问 · ${orphans.length}`),
+      ...(isClosed(og) ? [] : orphans.map(a => h(AskCard, { key: `ask-${a.id}`, a, onChanged })))] : []),
     ...groups.flatMap(g => [h('button', { key: `grp-${g.key}`, className: 'dshm-grp dshm-grp-btn', 'data-group': g.key, 'aria-expanded': !isClosed(g), onClick: () => toggle(g) },
       `${isClosed(g) ? '▸' : '▾'} ${g.name} · ${g.list.length}`),
       ...(isClosed(g) ? [] : g.list.flatMap((t: any) => [
         h(TaskRow, { key: t.id, t, now: data?.now, onChanged }),
         ...asks.filter(a => a.task === t.id).map(a => h(AskCard, { key: `ask-${a.id}`, a, onChanged })),
       ]))]),
-    tasks.length === 0 && h('div', { className: 'dshm-meta', style: { padding: '12px 14px' } }, archived ? '没有已归档的任务' : '这个视图里没有任务'))
+    tasks.length === 0 && orphans.length === 0 && h('div', { className: 'dshm-meta', style: { padding: '12px 14px' } }, archived ? '没有已归档的任务' : '这个视图里没有任务'))
 }
 
 function TaskRow({ t, now, onChanged }: any) {
