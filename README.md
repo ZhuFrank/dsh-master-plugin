@@ -128,7 +128,7 @@ Remove the plugin from the **Plugins** page, or run `dsh plugin --profile web re
 
 ## Relation to DeepSeek's Super-agent design
 
-DeepSeek Harness's team published *Super-agent 设计探索* (Oct 2026) together with [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype). dsh-master is a **local, plugin-level take on a few of those ideas**. It is not an implementation of Super-agent. Where the ideas meet:
+DeepSeek Harness's team published *Super-agent 设计探索* (Oct 2026) together with [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype). dsh-master is a **personal, single-machine implementation of the Super-agent design**: one person, one computer, running as a plugin inside a local DSH instance. Cloud-hosted state, IM / GitHub / e-mail triggers and remote execution are left out (see below). This is a personal project, not affiliated with DeepSeek. Where it maps to the design:
 
 - **Two layers.** The article separates a resident layer that talks to people and dispatches work from isolated worker sessions that execute and report back. In dsh-master, a project master is that coordinating layer. Its preset has no write/edit tools, and members run tasks in their own contexts and report to it. Our two presets were adapted from the prototype's router and worker presets (MIT).
 - **Plugin-delivered messages.** Following the prototype, cross-session messages are delivered to the agent directly under the plugin's own source. They do not go through the user's input box.

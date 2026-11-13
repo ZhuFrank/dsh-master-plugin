@@ -146,7 +146,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 
 ## 和 DeepSeek Super-agent 设计的关系
 
-DeepSeek Harness 团队发表过《Super-agent 设计探索》（2026 年 10 月），同时开源了 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)。dsh-master 是把其中几个思路**用本地插件的方式做了一版**，不是 Super-agent 的实现。对得上的地方有这几处：
+DeepSeek Harness 团队发表过《Super-agent 设计探索》（2026 年 10 月），同时开源了 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)。dsh-master 是 Super-agent 设计的**个人单机版实现**：一个人、一台电脑，以插件形式跑在本地 DSH 里；云端存状态、群聊 / GitHub / 邮件触发、远程执行都没做（见下文）。本项目是个人作品，与 DeepSeek 官方无关。和原设计对得上的地方有这几处：
 
 - **双层架构。** 文章把系统分成两层：常驻的一层负责跟人交互、分派任务；上下文隔离的执行会话负责干活并汇报。在 dsh-master 里，项目总管就是负责协调的那一层，它的预设不带 write / edit；成员在各自的上下文里干活，回报给总管。我们的两个预设就是照原型的 router / worker 预设改的（MIT）。
 - **由插件投递消息。** 照原型的做法，跨会话消息由插件以自己的来源直接投给 Agent，不经过用户的输入框。
