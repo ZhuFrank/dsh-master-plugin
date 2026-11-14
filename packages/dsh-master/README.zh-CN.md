@@ -56,6 +56,8 @@ dsh-master 把这些记账的活交给插件：
 
 > **装在哪里。** 同一个 `DSH_HOME` 下的各个 profile 共用会话列表、定时任务和模型凭据。装进日常用的 profile，总管和成员会话会和你的日常会话出现在一起（见下文「它会改动你的 DSH 什么」）。想隔开，就用单独的 `DSH_HOME` 起一个实例（方式 B）。
 
+**从插件市场装（最省事）。** DSH 官方没有插件市场，社区插件 [dshmarket](https://github.com/dsh-market/dsh-market) 提供了一个。先装一次它：`dsh plugin --profile web add dshmarket`，然后重启 `dsh web`。再打开「插件」页的「插件市场」标签，搜 `ZhuFrank`，在 dsh-master 上点「安装」→「确认安装」，按提示刷新页面。市场的目录大约一天更新一次，新版本可能要过一天才出现在市场里；想马上装某个指定版本，用下面的方式 A。
+
 **A. 装进日常 profile（`web`）。** 先停掉 `dsh web`，然后运行：
 
 ```sh

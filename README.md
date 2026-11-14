@@ -46,6 +46,8 @@ A single DSH session works well for a single task. Once you have several streams
 
 > **Where to install.** All profiles under one `DSH_HOME` share the session list, schedules and model credentials. If you install into your everyday profile, the master and member sessions appear next to your everyday sessions (see [What it changes](#what-it-changes-in-your-dsh)). To keep them apart, run a separate instance with its own `DSH_HOME` (option B).
 
+**From the plugin market (easiest).** DSH has no official plugin market; the community plugin [dshmarket](https://github.com/dsh-market/dsh-market) adds one. Install it once with `dsh plugin --profile web add dshmarket` and restart `dsh web`. Then open **Plugins → Plugin Market**, search `ZhuFrank`, and click **Install** on dsh-master; reload the page when it asks. The market's catalog refreshes about once a day, so a new release can take a day to show up there; to install a specific release right away, use option A below.
+
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
