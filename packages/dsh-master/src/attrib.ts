@@ -61,9 +61,12 @@ export class Attribution {
         const sc = scanUserText(text, this.exists)
         sc.atTasks.forEach(x => atTasks.add(x)); sc.textTasks.forEach(x => textTasks.add(x)); sc.sessions.forEach(x => sessions.add(x))
         excerpt ??= rewriteTaskLinks(text).replace(SESSION_LINK, (_s, label) => `@${label}`).replace(/\s+/g, ' ').trim().slice(0, 160)
-        if (!/dsh-master-task:/.test(text)) return m
+        // G14 审稿 SHOULD 7 ⑩：用户说了任务叫法 ⇒ 后面加「（= 编号）」（只标注，不改路由）
+        const fix = (t: string) => this.core.annotateUserAliases(rewriteTaskLinks(t))
+        const parts = (m.content ?? []).map((c: any) => c?.type === 'text' ? { ...c, text: fix(c.text) } : c)
+        if (!parts.some((c: any, i: number) => c?.type === 'text' && c.text !== m.content[i].text)) return m
         changed = true
-        return deepFreeze(structuredClone({ ...m, content: (m.content ?? []).map((c: any) => c?.type === 'text' ? { ...c, text: rewriteTaskLinks(c.text) } : c) }))
+        return deepFreeze(structuredClone({ ...m, content: parts }))
       }
       if (kind === 'dsh-master' && m?.source?.form === 'relay') {
         const text = textOf(m); const task = relayTask(text)

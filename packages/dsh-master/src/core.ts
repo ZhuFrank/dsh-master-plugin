@@ -32,6 +32,29 @@ export type ReportState = (typeof REPORT_STATES)[number]
 const ACTIVE_TASK_STATES = new Set(['进行中', '打回', '等待'])
 /** 终态：总管验收 final（或以后的取消）之后，执行会话的任何回报都不能再改任务状态（状态机单向）。 */
 export const TERMINAL_TASK_STATES = new Set(['完成', '取消'])
+/** G14 ④：压缩后提醒里「现状」一段的上限（字），超了截断、给全文路径。 */
+export const COMPACT_BRIEF_MAX = 3000
+/** G14 ⑥：成员回报正文投给总管的上限（字）；全文照存事件和任务书（照 Claude Code T010 回报 ≤1,200 字，DSH 放宽到 1,500）。 */
+/** G14 ⑩：叫法规则（照 Claude Code 看板 T020 task_view.validate）。返回去掉首尾空白的叫法，'' = 恢复原标题；不合规抛 ToolInputError。 */
+export function validateAlias(raw: string, others: string[]): string {
+  const a = raw.trim()
+  if (!a) return ''
+  if (/[\n\r\u0000-\u001f]/.test(a)) throw new ToolInputError('叫法不能有换行')
+  const len = [...a].length
+  if (len < 4 || len > 20) throw new ToolInputError(`叫法要 4–20 个字（现在 ${len} 个）`)
+  if (/[`*_#\[\]()|<>~\\@]/.test(a)) throw new ToolInputError('叫法里不能有 ` * _ # [ ] ( ) | < > ~ \\ @ 这些符号（括号用全角「（）」）')
+  if (/T\d{3,}|L\d{4}-\d+|Q\d{4}-\d+/i.test(a.normalize('NFKC'))) throw new ToolInputError('叫法里不能含任务 / 等你定编号')
+  const n = (x: string) => x.normalize('NFKC').toLowerCase()
+  for (const o of others) {
+    if (n(o) === n(a)) throw new ToolInputError(`和别的任务的叫法「${o}」重名了`)
+    if (n(o).includes(n(a)) || n(a).includes(n(o))) throw new ToolInputError(`和别的任务的叫法「${o}」互为子串，容易认错`)
+  }
+  return a
+}
+/** G14 ⑧：总管被叫醒后只调这些 = 白叫醒（看了一眼就结束） */
+export const WAKE_READONLY_TOOLS = new Set(['master_patrol', 'master_sessions', 'master_reminders', 'heavy_status', 'devlog_recall', 'memory_search'])
+export const REPORT_BODY_MAX = 1500
+const clipBody = (body: string) => body.length > REPORT_BODY_MAX ? `${body.slice(0, REPORT_BODY_MAX)}…\n（正文 ${body.length} 字，这里截断到前 ${REPORT_BODY_MAX} 字；全文在看板这件任务的时间线和任务书「执行回报」里）` : body
 
 export type LiveStatus = 'running' | 'idle' | 'cold'
 export interface SessionPort {
@@ -46,7 +69,14 @@ export interface ToolSpec { name: string; description: string; parameters: JsonS
 
 export class ToolInputError extends Error {}
 
-export interface HeavyRunner { submit(input: { session: string; label: string; command: string; cwd: string; minFreeGb: number }): Promise<unknown> }
+export interface HeavyRunner {
+  submit(input: { session: string; label: string; command: string; cwd: string; minFreeGb: number }): Promise<unknown>
+  /** G14 ③：取消排队中的；权限在 Core 判 */
+  cancel?(id: number, by: string): unknown
+  job?(id: number): { id: number; session: string; label: string; state: string } | undefined
+  jobs?(): Array<{ id: number; session: string; label: string; min_free_gb: number; state: string; created_at: string; started_at: string | null; ended_at: string | null }>
+  memory?(): { free_gb: number; total_gb: number; how: string }
+}
 export interface CoreOptions {
   /** G4c：master_tag 的实现（归属在 attrib.ts）。 */
   tag?: (caller: string, args: Record<string, unknown>) => unknown
@@ -186,7 +216,8 @@ export class Core {
 
   private enqueue(input: Parameters<Delivery['enqueue']>[0]) {
     try {
-      const r = this.delivery.enqueue(input)
+      // G14 ⑩：插件发给会话的每条消息里，有叫法的任务第一次出现时写成「T018（你叫它：…）」
+      const r = this.delivery.enqueue({ ...input, text: this.annotateTasks(input.text) })
       this.kick()
       return r
     } catch (e) {
@@ -250,18 +281,43 @@ export class Core {
       { name: 'master_ask_user', description: '记下一件要用户拍板的事（一次一个具体问题），出现在看板「等你定」里。',
         parameters: schema({ task: S('相关任务 ID'), question: S('具体问题'), options: { type: 'array', items: { type: 'string' }, description: '可选项（可选）' } }, ['task', 'question']),
         run: (a) => this.askUser(obj(a)) },
+      { name: 'master_ask_close', description: '用户在对话里（不是在看板上点）已经回答了某件等你定时，用它把那件结案，写上用户怎么答的。不结案的话它会一直挂在看板「等你定」里。',
+        parameters: schema({ code: S('等你定编号，如 Q1118-2'), answer: S('用户的回答（照原话概括）') }, ['code', 'answer']),
+        run: (a) => this.askClose(obj(a)) },
+      // G14 ⑤：跟进提醒（「两周后再核一次」这类承诺落库，压缩后不丢；到点叫醒总管）
+      { name: 'master_remind', description: '挂一个到点提醒：到了时间插件给你发一条消息（会叫醒你）。用于「过两天再核一次」「11-28 看看市场刷新没有」这类承诺，别只记在上下文里。at 写北京时间「2026-11-28 10:00」或相对时间「30m」「3h」「2d」。',
+        parameters: schema({ at: S('什么时候：北京时间 YYYY-MM-DD HH:MM，或 30m / 3h / 2d'), text: S('到点时提醒你做什么（写清楚，到时你可能已经压缩过）'), task: S('相关任务 ID（可选）') }, ['at', 'text']),
+        run: (a, caller) => this.remind(obj(a), caller) },
+      { name: 'master_reminders', description: '列出挂着的到点提醒（还有最近到点 / 取消的）。',
+        parameters: schema({}, []), run: async () => this.reminderList() },
+      { name: 'master_remind_cancel', description: '取消一个还没到点的提醒。',
+        parameters: schema({ id: { type: 'number', description: 'master_remind 返回的 id' } }, ['id']), run: (a) => this.remindCancel(obj(a)) },
+      ...this.heavyAdminTools(),
     ]
   }
 
   // ---------------- 执行会话工具 ----------------
+  /** G14 ③ ④：总管和成员都有（总管要能看队列、取消卡住的活）。 */
+  private heavyAdminTools(): ToolSpec[] {
+    if (!this.opts.heavy?.cancel) return []
+    return [
+      { name: 'heavy_cancel', description: '取消一件还在排队的重活（成员只能取消自己提交的；总管能取消本项目成员的）。跑着的停不了。门槛设高了排着不动时，取消后用低一点的门槛重提。',
+        parameters: schema({ id: { type: 'number', description: 'heavy_run 返回的 id' } }, ['id']),
+        run: (a: unknown, caller: string) => this.heavyCancel(obj(a), caller) } as ToolSpec,
+      { name: 'heavy_status', description: '看重活队列（本项目成员的活：排队 / 在跑 / 最近结束的，门槛、排了多久）和插件读到的当前可用内存。看内存用它，不要自己读 vm_stat 的 free 页（口径不一样，会读成只剩一百多 MB）。',
+        parameters: schema({}, []),
+        run: (_a: unknown, caller: string) => this.heavyStatus(caller) } as ToolSpec]
+  }
+
   private execTools(): ToolSpec[] {
     return [
-      { name: 'master_report', description: '向总管回报（结构化状态行）。状态只能是：进展、等待、受阻、失败、就绪、完成。时间由插件按北京时间自动填，不要自己写时间。闸门到了用「就绪」并停下等验收。',
+      { name: 'master_report', description: '向总管回报（结构化状态行）。状态只能是：进展、等待、受阻、失败、就绪、完成。时间由插件按北京时间自动填，不要自己写时间。闸门到了用「就绪」并停下等验收。body 要点放前面：超过 1,500 字时总管只收到前 1,500 字（全文照存在看板和任务书）。',
         parameters: schema({ task: S('任务 ID'), state: S('状态', { enum: [...REPORT_STATES] }), action: S('当前动作，一句话'), ask: S('要总管/用户定的一个具体问题（可选）'), gate: S('就绪时：哪个闸门'), body: S('做了什么、产物绝对路径、怎么验的、遇到的问题（可选）') }, ['task', 'state', 'action']),
         run: (a, caller) => this.report(obj(a), caller) },
       ...(this.opts.heavy ? [{ name: 'heavy_run', description: '重活（渲染、转写、分离音轨、本地大模型推理）排队跑：先查系统可用内存，同一时间只跑一件；跑完会自动发消息告诉你结果和日志路径。不要用 bash 直接跑这些。',
         parameters: schema({ label: S('简短标签'), command: S('要跑的命令（在你的工作目录里执行）'), min_free_gb: { type: 'number', description: '至少要多少 GB 可用内存才开跑（默认 4）' } }, ['label', 'command']),
-        run: (a: unknown, caller: string) => this.heavyRun(obj(a), caller) } as ToolSpec] : []),
+        run: (a: unknown, caller: string) => this.heavyRun(obj(a), caller) } as ToolSpec,
+      ...this.heavyAdminTools()] : []),
     ]
   }
 
@@ -437,7 +493,8 @@ export class Core {
         this.store.addEvent({ at, task, session: cur.owner, type: 'task/reviewed', data: { by: caller, verdict, gate, final, notes } })
         this.appendSpec(task, 'review', `- ${bjtStamp(now)} ${gate ?? ''} ${verdict}${final && verdict === '通过' ? '（任务完成）' : ''}：${notes.split('\n').join(' ')}`)
       }
-      return { task, verdict, state, ...r }
+      const note = this.openAsksNote(task)
+      return { task, verdict, state, ...r, ...(note ? { note } : {}) }
     })
   }
 
@@ -446,10 +503,190 @@ export class Core {
     const question = str(a, 'question', { required: true, max: 500 })!
     const options = Array.isArray(a.options) ? a.options.filter((o): o is string => typeof o === 'string').slice(0, 6) : []
     const at = bjtIso(this.clock())
+    const note = this.openAsksNote(task) // G14 审稿 SHOULD 7 ③：同一件任务上还挂着别的等你定 ⇒ 提醒对话里答过的要结案
     const id = this.store.addAsk({ task, question, options, at })
     const code = this.store.getAsk(id)!.code
     this.store.addEvent({ at, task, type: 'ask/open', data: { id, code, question, options } })
-    return { id, code, task, question, options }
+    return { id, code, task, question, options, ...(note ? { note } : {}) }
+  }
+
+  /** G14 审稿 SHOULD 7 ③：这件任务还挂着等你定时，给总管的一句提示（用户在对话里答过的要用 master_ask_close 结案）。 */
+  openAsksNote(task: string): string | undefined {
+    const open = this.store.openAsks().filter(q => q.task === task)
+    if (!open.length) return undefined
+    return `${task} 还挂着等你定 ${open.map(q => q.code ?? `#${q.id}`).join('、')}：用户要是已经在对话里答了，用 master_ask_close 结案，不然它会一直挂在看板上`
+  }
+
+  // ---------------- G14 ⑩ 任务叫法 ----------------
+  aliasOf(task: string): string | null { return this.store.getMeta(`alias:${task}`) || null }
+  /** 正文里每个有叫法的任务编号，第一次出现（后面还没写叫法的）换成「编号（你叫它：叫法）」。 */
+  annotateTasks(text: string): string {
+    const aliases = this.store.markMap('alias:')
+    if (!aliases.size) return text
+    let out = text
+    for (const [id, alias] of aliases) {
+      if (!alias) continue
+      // G14 审稿 SHOULD 4：路径 / 文件名里的编号不改（前面是 / \\ _ .，后面是 . 字母数字 _ / -）；函数式 replace，叫法里的 $ 原样
+      const re = new RegExp(`(?<![A-Za-z0-9_./\\\\-])${id.replace(/[-]/g, '\\-')}(?![A-Za-z0-9_./\\\\-])(?!（你叫它)`)
+      out = out.replace(re, () => `${id}（你叫它：${alias}）`)
+    }
+    return out
+  }
+  /** G14 审稿 SHOULD 7 ⑩：守则里的叫法对照表（只列没结的、有叫法的任务；一件都没有 ⇒ 空串，不占守则）。 */
+  aliasTable(): string {
+    const rows = this.store.listTasks().filter(t => !TERMINAL_TASK_STATES.has(t.state)).map(t => ({ t, a: this.aliasOf(t.id) })).filter(x => x.a)
+    if (!rows.length) return ''
+    return ['## 叫法对照（用户给任务起的名字）', '用户说这些名字就是指对应的任务；跟用户说任务时写成「叫法（编号）」，命令和工具参数里只写编号。',
+      ...rows.map(x => `- 「${x.a}」= ${x.t.id}（${x.t.title}）`)].join('\n')
+  }
+
+  /** G14 审稿 SHOULD 7 ⑩：用户的话里出现叫法（含改名前的旧叫法）⇒ 第一次出现的后面加「（= 编号）」。
+   *  只对上一件任务才标；正文里已经写了这个编号不标；旧叫法落在别的任务现在的叫法里面不算（照 Claude Code 看板 T020 find_hits）。只标注，不改路由。 */
+  annotateUserAliases(text: string): string {
+    const cur = [...this.store.markMap('alias:')].filter(([, v]) => v).map(([task, alias]) => ({ task, alias, current: true }))
+    if (!cur.length) return text
+    const old = this.store.events({ type: 'task/alias' }).flatMap(e => { try { const d = JSON.parse(e.data); return d.old ? [{ task: String(e.task), alias: String(d.old), current: false }] : [] } catch { return [] } })
+      .filter(o => !cur.some(c => c.alias === o.alias))
+    // G14 复核：和叫法校验同一套规则（NFKC + 不分大小写）；逐字归一并记下每个归一后的字来自原文第几个字，命中位置映射回原文
+    const norm = (x: string) => x.normalize('NFKC').toLowerCase()
+    let low = ''; const from: number[] = []
+    for (let i = 0; i < text.length; i++) { const n = norm(text[i]!); low += n; for (let k = 0; k < n.length; k++) from.push(i) }
+    from.push(text.length)
+    const hits = [...cur, ...old].map(x => { const a = norm(x.alias); const j = low.indexOf(a); return { ...x, at: j < 0 ? -1 : from[j]!, endAt: j < 0 ? -1 : from[j + a.length]! } }).filter(x => x.at >= 0)
+    const curSpans = hits.filter(h => h.current).map(h => [h.at, h.endAt] as const)
+    const kept = hits.filter(h => h.current || !curSpans.some(([s0, e0]) => h.at >= s0 && h.endAt <= e0))
+    const tasks = new Set(kept.map(h => h.task))
+    if (tasks.size !== 1) return text
+    const task = [...tasks][0]!
+    if (new RegExp(`(?<![A-Za-z0-9-])${task.replace(/-/g, '\\-')}(?![0-9-])`).test(text)) return text
+    const first = kept.filter(h => h.task === task).sort((x, y) => x.at - y.at)[0]!
+    const end = first.endAt
+    return `${text.slice(0, end)}（= ${task}）${text.slice(end)}`
+  }
+
+  /** 看板上改叫法（只有用户能改）。改了 ⇒ 总管和负责成员各收一条 inject；历史只追加（task/alias 事件）。 */
+  setAlias(task: string, raw: string): { alias: string; old: string | null } {
+    const t = this.requireTask(task)
+    const old = this.aliasOf(task)
+    const others = [...this.store.markMap('alias:')].filter(([id, v]) => id !== task && v).map(([, v]) => v)
+    const alias = validateAlias(raw, others)
+    if ((old ?? '') === alias) return { alias, old }
+    const at = bjtIso(this.clock())
+    this.store.setMark('alias:', task, alias || null)
+    this.store.addEvent({ at, task, type: 'task/alias', data: { old, new: alias || null } })
+    const text = alias ? `用户在看板上把 ${task}「${t.title}」叫作「${alias}」。以后用户说「${alias}」就是指 ${task}；跟用户说这件任务时写成「${alias}（${task}）」。命令和工具参数里照旧只写编号。`
+      : `用户在看板上取消了 ${task} 的叫法${old ? `「${old}」` : ''}，以后照原标题「${t.title}」说。`
+    const to = new Set([this.masterId, ...(t.owner && this.roleOf(t.owner) === 'exec' ? [t.owner] : [])])
+    for (const id of to) { try { this.systemNotify({ key: `alias:${task}:${at}:${id}`, to: id, task, mode: 'inject', label: '任务叫法', text }) } catch { /* 限频：叫法已存，消息里照样会标注 */ } }
+    return { alias, old }
+  }
+
+  // ---------------- G14 ⑧ 统计白叫醒 ----------------
+  /** 巡检 / 保底真把总管叫醒了：记一笔（同一时刻只记最近一次）。 */
+  noteWake(source: 'patrol' | 'schedule', keys: string[]): void {
+    this.store.setMeta('wake:pending', JSON.stringify({ at: this.clock(), source, keys }))
+  }
+  /** 总管这一轮调了哪些工具（入口在 tools/pre-execute 里调）。 */
+  noteToolCall(sessionId: string, name: string | undefined): void {
+    if (!name || this.roleOf(sessionId) !== 'master') return
+    let cur: string[] = []; try { cur = JSON.parse(this.store.getMeta(`turntools:${sessionId}`) || '[]') } catch { /* 坏了就重来 */ }
+    if (cur.length < 50) this.store.setMeta(`turntools:${sessionId}`, JSON.stringify([...cur, name]))
+  }
+  /** 总管一轮结束：这一轮是叫醒之后开始的 ⇒ 只调了只读工具 = noop，否则 = acted。 */
+  private closeWake(sessionId: string): void {
+    let w: { at: number; source: string; keys: string[] } | undefined
+    try { w = JSON.parse(this.store.getMeta('wake:pending') || 'null') ?? undefined } catch { w = undefined }
+    const t = this.store.getTurn(sessionId)
+    if (!w || !t?.started_ms || t.started_ms < w.at) return
+    let tools: string[] = []; try { tools = JSON.parse(this.store.getMeta(`turntools:${sessionId}`) || '[]') } catch { /* 当成没调 */ }
+    const outcome = tools.some(x => !WAKE_READONLY_TOOLS.has(x)) ? 'acted' : 'noop'
+    this.store.addEvent({ at: bjtIso(this.clock()), session: sessionId, type: 'wake/outcome', data: { source: w.source, keys: w.keys, outcome, tools: [...new Set(tools)] } })
+    this.store.setMeta('wake:pending', 'null')
+  }
+  /** 最近 days 天：按发现种类（key 冒号前那段）数叫醒次数和白叫醒次数，多的在前。 */
+  wakeStats(days = 7): Array<{ kind: string; wakes: number; noop: number }> {
+    const since = this.clock() - days * 86400_000
+    const m = new Map<string, { kind: string; wakes: number; noop: number }>()
+    for (const e of this.store.events({ type: 'wake/outcome' })) {
+      if (Date.parse(e.at) < since) continue
+      let d: { keys?: string[]; outcome?: string } = {}; try { d = JSON.parse(e.data) } catch { continue }
+      for (const kind of new Set((d.keys ?? []).map(k => k.split(':')[0]!))) {
+        const r = m.get(kind) ?? { kind, wakes: 0, noop: 0 }
+        r.wakes++; if (d.outcome === 'noop') r.noop++
+        m.set(kind, r)
+      }
+    }
+    return [...m.values()].sort((x, y) => y.wakes - x.wakes)
+  }
+
+  // ---------------- G14 ⑤ 到点提醒 ----------------
+  /** at：北京时间「YYYY-MM-DD HH:MM」或相对时间「30m / 3h / 2d」（也认 分钟 / 小时 / 天）。 */
+  private parseAt(raw: string, now: number): number {
+    const t = raw.trim()
+    const rel = t.match(/^(\d+)\s*(m|min|分钟|h|小时|d|天)$/i)
+    if (rel) return now + Number(rel[1]) * ({ m: 60_000, min: 60_000, 分钟: 60_000, h: 3600_000, 小时: 3600_000, d: 86400_000, 天: 86400_000 } as Record<string, number>)[rel[2]!.toLowerCase()]!
+    const abs = t.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/)
+    if (abs) {
+      // G14 审稿 SHOULD 6：Date.UTC 会把 02-30 悄悄顺延成 03-02 ⇒ 算完再按北京时间拆回来，和输入逐项对不上就是不存在的时间
+      const ms = Date.UTC(Number(abs[1]), Number(abs[2]) - 1, Number(abs[3]), Number(abs[4]) - 8, Number(abs[5]))
+      if (bjtStamp(ms) !== `${abs[1]}-${abs[2]}-${abs[3]} ${abs[4]}${abs[5]}`) throw new ToolInputError(`${raw} 这个时间不存在（月 / 日 / 时 / 分超出范围）`)
+      return ms
+    }
+    throw new ToolInputError(`at 看不懂：「${raw}」。写北京时间 2026-11-28 10:00，或 30m / 3h / 2d`)
+  }
+
+  async remind(a: Record<string, unknown>, caller: string) {
+    const raw = str(a, 'at', { required: true, max: 40 })!
+    const text = str(a, 'text', { required: true, max: 500 })!
+    const task = str(a, 'task', { pattern: TASK_ID }) ?? null
+    const now = this.clock(); const atMs = this.parseAt(raw, now)
+    if (atMs <= now) throw new ToolInputError(`${bjtStamp(atMs)} 已经过去了，提醒要挂在以后`)
+    const id = this.store.addReminder({ task, at: bjtIso(atMs), at_ms: atMs, text, created_by: caller, created_at: bjtIso(now) })
+    this.store.addEvent({ at: bjtIso(now), task, session: caller, type: 'reminder/set', data: { id, at: bjtIso(atMs), text } })
+    return { id, at: bjtStamp(atMs), state: 'pending', ...(task ? { task } : {}) }
+  }
+
+  async reminderList() {
+    const all = this.store.reminders()
+    const show = [...all.filter(r => r.state !== 'pending').slice(-10), ...all.filter(r => r.state === 'pending')].sort((x, y) => x.id - y.id)
+    return { reminders: show.map(r => ({ id: r.id, at: bjtStamp(r.at_ms), state: r.state, text: r.text, ...(r.task ? { task: r.task } : {}) })) }
+  }
+
+  async remindCancel(a: Record<string, unknown>) {
+    const id = Number(a.id)
+    const r = Number.isInteger(id) ? this.store.getReminder(id) : undefined
+    if (!r) throw new ToolInputError(`没有提醒 #${a.id}`)
+    if (r.state !== 'pending') throw new ToolInputError(`提醒 #${id} 已经是 ${r.state === 'done' ? '到点发过了' : '取消了'}`)
+    this.store.setReminderState(id, 'cancelled', bjtIso(this.clock()))
+    return { id, state: 'cancelled' }
+  }
+
+  /** 心跳里调：到点的提醒投给总管（followup，会叫醒）；实例没开 / 暂停中错过的，补投并写明晚了多久。投不出去（限频）留到下次。 */
+  fireReminders(): number {
+    const now = this.clock(); let n = 0
+    for (const r of this.store.reminders('pending')) {
+      if (r.at_ms > now) break
+      const late = now - r.at_ms > 5 * 60_000 ? `（原定 ${bjtStamp(r.at_ms)}，晚了 ${Math.round((now - r.at_ms) / 60_000)} 分钟：实例没开或项目暂停中）` : ''
+      try {
+        this.systemNotify({ key: `reminder:${r.id}`, to: this.masterId, mode: 'followup', label: '到点提醒', ...(r.task ? { task: r.task } : {}),
+          text: `到点提醒 #${r.id}${r.task ? `（${r.task}）` : ''}：${r.text}\n（这是你 ${bjtStamp(Date.parse(r.created_at))} 用 master_remind 挂的${late ? `；${late.slice(1, -1)}` : ''}）` })
+      } catch { continue }
+      this.store.setReminderState(r.id, 'done', bjtIso(now)); n++
+    }
+    return n
+  }
+
+  /** G14 ③d（T005 待评估第 5 项）：在对话里答过的等你定由总管结案。 */
+  async askClose(a: Record<string, unknown>) {
+    const code = str(a, 'code', { required: true, max: 20 })!
+    const answer = str(a, 'answer', { required: true, max: 500 })!
+    const ask = this.store.openAsks().find(q => q.code === code) ?? this.store.findAskByCode(code)
+    if (!ask) throw new ToolInputError(`没有等你定 ${code}`)
+    if (ask.state !== 'open') throw new ToolInputError(`${code} 已经结案了（${ask.answer ?? ''}）`)
+    const at = bjtIso(this.clock())
+    this.store.answerAsk(ask.id, answer, at)
+    this.store.addEvent({ at, task: ask.task, type: 'ask/answered', data: { id: ask.id, answer, to: this.masterId, via: 'conversation' } })
+    return { code, id: ask.id, task: ask.task, state: 'answered' }
   }
 
   async report(a: Record<string, unknown>, caller: string) {
@@ -472,7 +709,7 @@ export class Core {
     const lateNote = closed ? `【已结案任务的迟到回报：${task} 已是「${cur.state}」，这条回报不改任务状态】\n` : ''
     const result = this.store.tx(() => {
       const r = this.enqueue({ key: `report:${task}:${state}:${hash(action + '\n' + (ask ?? '') + '\n' + body)}`, from: caller, to: this.masterId, task, mode: quiet ? 'inject' : 'followup',
-        text: `${lateNote}${body ? `${line}\n${body}` : line}${!closed && cur.kind === 'light' && state === '完成' ? `\n\n【轻任务 ${task} 已按「完成」结案。你核对完产物后用 master_review 记一笔（通过 / 打回），看板时间线上才看得到验收】` : ''}`, summary: closed ? `迟到回报 ${line}` : line, label: closed ? '已结案任务的迟到回报' : '回报' })
+        text: `${lateNote}${body ? `${line}\n${clipBody(body)}` : line}${!closed && cur.kind === 'light' && state === '完成' ? `\n\n【轻任务 ${task} 已按「完成」结案。你核对完产物后用 master_review 记一笔（通过 / 打回），看板时间线上才看得到验收】` : ''}`, summary: closed ? `迟到回报 ${line}` : line, label: closed ? '已结案任务的迟到回报' : '回报' })
       if (r.status === 'queued') {
         if (!closed) this.store.updateTask(task, { state: taskState, gate }, at)
         this.store.addEvent({ at, task, session: caller, type: closed ? 'task/late-report' : 'task/report', data: { state, gate, line, body, ...(closed ? { taskState: cur.state } : {}) } })
@@ -519,8 +756,10 @@ export class Core {
       if (role === 'exec' && now - u >= 0 && now - u <= USER_TURN_WINDOW_MS) this.store.setMeta(`userturn:${sessionId}`, String(now))
       // 一条用户消息只认领一轮：开始跑了就用掉（g2-flow 回归：用户说完、10 秒内派活开的一轮被误当成用户开的，空闲提醒没了）
       if (role === 'exec') this.store.setMeta(`usermsg:${sessionId}`, '')
+      if (role === 'master') this.store.setMeta(`turntools:${sessionId}`, '[]')
       return
     }
+    if (role === 'master') { this.closeWake(sessionId); return }
     if (role !== 'exec') return
     const t = this.store.getTurn(sessionId)
     if (!t?.started_ms) return
@@ -617,12 +856,39 @@ export class Core {
     const role = this.roleOf(sessionId)
     if (!role) return
     const row = this.store.getSession(sessionId)!
-    const hb = this.opts.mem ? this.opts.mem.docs.abs(this.handbookFile(sessionId, row.handbook)) : row.handbook ?? '（无）'
-    const tasks = this.activeTasks(sessionId).map(t => { const sp = this.spec(t.id); return `${t.id}${sp && this.opts.mem ? `（任务书 ${this.opts.mem.docs.abs(sp.file)}）` : ''}` })
+    const hbRel = this.handbookFile(sessionId, row.handbook)
+    const hb = this.opts.mem ? this.opts.mem.docs.abs(hbRel) : row.handbook ?? '（无）'
+    // G14 ④：不只给路径，直接把库里的现状带进去（照 Claude Code 版压缩后读回「当前在途」）。总管看整个项目没结的任务，成员只看自己的
+    const tasks = role === 'master' ? this.store.listTasks().filter(t => !TERMINAL_TASK_STATES.has(t.state)) : this.activeTasks(sessionId)
+    const specs = tasks.map(t => { const sp = this.spec(t.id); return sp && this.opts.mem ? `${t.id}：${this.opts.mem.docs.abs(sp.file)}` : '' }).filter(Boolean)
+    const brief = this.compactBrief(sessionId, role, tasks, hbRel)
+    const cut = brief.length > COMPACT_BRIEF_MAX ? `${brief.slice(0, COMPACT_BRIEF_MAX)}…\n（上面超过 ${COMPACT_BRIEF_MAX} 字已截断，全文见下面的手册和任务书）` : brief
     try {
       this.enqueue({ key: `compact:${sessionId}:${marker}`, from: SYSTEM_ID, to: sessionId, mode: 'inject', label: '压缩后提醒',
-        text: `你刚被压缩过（摘要是有损的）。继续之前先：① 读专题手册 ${hb}；② ${tasks.length ? `读在途任务的任务书：${tasks.join('、')}` : '确认有没有在途任务（master_sessions / 任务书）'}；③ 对要动的地方 devlog_recall 一下。` })
+        text: [`你刚被压缩过（摘要是有损的）。下面是插件按库里的状态给你的现状，先看这些再接着干：`, '', cut || '（没有在途任务，手册「标准做法」也还是空的）', '',
+          `要细节时：① 专题手册全文 ${hb}；② ${specs.length ? `任务书：${specs.join('、')}` : '确认有没有在途任务（master_sessions / 任务书）'}；③ 对要动的地方 devlog_recall 一下。`].join('\n') })
     } catch { /* 限频 */ }
+  }
+
+  /** G14 ④：压缩后提醒里的现状：在途任务（目标、闸门、负责、最后一次回报）、还没答的等你定、手册「标准做法」原文。 */
+  private compactBrief(sessionId: string, role: string, tasks: TaskRow[], hbRel: string): string {
+    const out: string[] = []
+    if (tasks.length) {
+      out.push('【在途任务】')
+      for (const t of tasks) {
+        const goal = this.spec(t.id)?.body?.['目标']?.replace(/\s+/g, ' ').slice(0, 150)
+        out.push(`- ${t.id}「${t.title}」［${t.state}${t.gate ? ` · 闸门 ${t.gate}` : ''} · 负责 ${t.owner}］${goal ? `目标：${goal}` : ''}`)
+        const last = this.store.events({ task: t.id, type: 'task/report' }).at(-1)
+        if (last) { try { out.push(`  最后回报：${String(JSON.parse(last.data).line ?? '')}`) } catch { /* 坏数据就不列 */ } }
+      }
+    }
+    const ids = new Set(tasks.map(t => t.id))
+    const asks = this.store.openAsks().filter(a => role === 'master' || ids.has(a.task))
+    if (asks.length) out.push('【还没答的等你定】', ...asks.map(a => `- ${a.code ?? `#${a.id}`}（${a.task}）${a.question}`), ...(role === 'master' ? ['（用户已经在对话里答过的，用 master_ask_close 结案）'] : []))
+    const hbText = this.opts.mem?.docs.read(hbRel)
+    const std = hbText?.match(/\n## 标准做法\n([\s\S]*?)(?=\n## |$)/)?.[1]?.trim()
+    if (std) out.push('【你的手册 · 标准做法】', std)
+    return out.join('\n')
   }
 
   // ---------------- 任务书、手册、任务板（受管 markdown）----------------
@@ -781,6 +1047,33 @@ export class Core {
     const minFreeGb = typeof a.min_free_gb === 'number' && a.min_free_gb > 0 ? a.min_free_gb : 4
     const row = this.store.getSession(caller)!
     return this.opts.heavy.submit({ session: caller, label, command, cwd: row.cwd, minFreeGb })
+  }
+
+  /** G14 ③：成员只能取消自己提交的；总管能取消本项目花名册里的会话提交的（全局队列里别的项目的活不归它管）。 */
+  async heavyCancel(a: Record<string, unknown>, caller: string) {
+    const h = this.opts.heavy
+    if (!h?.cancel || !h.job) throw new ToolInputError('heavy_cancel 没有启用')
+    const id = Number(a.id)
+    if (!Number.isInteger(id) || id <= 0) throw new ToolInputError('id 要写 heavy_run 返回的数字编号')
+    const j = h.job(id)
+    if (!j) throw new ToolInputError(`没有重活 #${id}`)
+    const role = this.roleOf(caller)
+    if (role !== 'master' && j.session !== caller) throw new ToolInputError(`重活 #${id} 是 ${j.session} 提交的，你只能取消自己提交的`)
+    if (role === 'master' && !this.store.getSession(j.session)) throw new ToolInputError(`重活 #${id} 是 ${j.session} 提交的，不是本项目的成员，不归你管`)
+    try { return h.cancel(id, caller) } catch (e) { throw new ToolInputError(String((e as Error).message ?? e)) }
+  }
+
+  /** G14 ① ④：本项目成员的重活 + 插件读到的可用内存和口径。 */
+  async heavyStatus(_caller: string) {
+    const h = this.opts.heavy
+    if (!h?.jobs || !h.memory) throw new ToolInputError('heavy_status 没有启用')
+    const now = this.clock()
+    const mine = h.jobs().filter(j => this.store.getSession(j.session))
+    const live = mine.filter(j => j.state === 'queued' || j.state === 'running')
+    const recent = mine.filter(j => j.state !== 'queued' && j.state !== 'running').slice(-10)
+    const mins = (iso: string | null) => iso ? Math.max(0, Math.round((now - Date.parse(iso)) / 60_000)) : null
+    return { ...h.memory(), jobs: [...recent, ...live].sort((x, y) => x.id - y.id).map(j => ({ id: j.id, label: j.label, session: j.session, min_free_gb: j.min_free_gb, state: j.state,
+      ...(j.state === 'queued' ? { queued_min: mins(j.created_at) } : {}), ...(j.state === 'running' ? { running_min: mins(j.started_at) } : {}) })) }
   }
 
   /** 面板 / 调试用的只读快照。 */

@@ -29,8 +29,8 @@ describe('Core · 角色', () => {
   it('不在花名册的会话一个 dsh-master 工具都没有', () => {
     expect(s.core.toolsFor('session-random')).toEqual([])
   })
-  it('总管有 10 个总管工具、没有 master_report；执行会话只有 master_report（无记忆层时）', async () => {
-    expect(s.core.toolsFor(MASTER_ID).map(t => t.name).sort()).toEqual(['master_ask_user', 'master_close', 'master_dispatch', 'master_link', 'master_patrol', 'master_review', 'master_send', 'master_sessions', 'master_spawn', 'task_spec_write'])
+  it('总管有 14 个总管工具（G14 加 master_ask_close、master_remind / master_reminders / master_remind_cancel）、没有 master_report；执行会话只有 master_report（无记忆层时）', async () => {
+    expect(s.core.toolsFor(MASTER_ID).map(t => t.name).sort()).toEqual(['master_ask_close', 'master_ask_user', 'master_close', 'master_dispatch', 'master_link', 'master_patrol', 'master_remind', 'master_remind_cancel', 'master_reminders', 'master_review', 'master_send', 'master_sessions', 'master_spawn', 'task_spec_write'])
     await tool(s.core, MASTER_ID, 'master_spawn')({ name: 'a', cwd: tmpdir('a'), title: 'A' })
     expect(s.core.toolsFor('exec-a').map(t => t.name)).toEqual(['master_report'])
   })

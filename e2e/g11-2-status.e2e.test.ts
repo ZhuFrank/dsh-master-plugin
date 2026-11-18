@@ -63,7 +63,7 @@ it('G11-2：总管状态栏——正在什么（不漏命令）、下次保底�
   expect(bar.master.doing).toBe('bash · 查询接口状态')
   for (const w of SECRET_WORDS) expect(JSON.stringify(bar)).not.toContain(w)
   expect(String(bar.nextSchedule)).toMatch(/^\d{4}-\d\d-\d\d \d{4}$/) // null 也要报成断言失败，不是 TypeError
-  expect(bar.counts).toEqual({ asks: 1, waiting: 1, blocked: 1 })
+  expect(bar.counts).toMatchObject({ asks: 1, waiting: 1, blocked: 1, asksOverdue: 0 }) // G14 ③c 加了 asksOverdue / asksOldestMin
   const x = bar.members.find((m: any) => m.id === 'alpha.x')
   expect(x.tasks.map((t: any) => `${t.id}[${t.state}]`).sort()).toEqual(['L1107-21[进行中]', 'L1107-22[受阻]', 'L1107-23[进行中]'])
 

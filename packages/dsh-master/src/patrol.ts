@@ -10,6 +10,7 @@ import type { Core } from './core.ts'
 import { TERMINAL_TASK_STATES } from './core.ts'
 import { bjtIso, bjtStamp, type Clock } from './time.ts'
 import type { MemoryLayer } from 'dsh-master-devlog'
+import { FREE_HOW } from './heavy.ts'
 
 export interface Finding { key: string; text: string }
 /** G11-1 直接对话：只看最近 24 小时；30 分钟没回才报；对外动作 / 叫停 / 改方向的关键词。 */
@@ -20,7 +21,10 @@ export interface PatrolOptions { stallMs: number; longRunMs: number; backupDir?:
   /** G5-E：在等用户点（审批 / 选择题）的会话；超过 waitMs（默认 10 分钟）报出来 */
   waiting?: () => Array<{ session: string; kind: 'approval' | 'question'; label: string; since: number }>; waitMs?: number
   /** 已结任务最近几天还有 devlog 才参与关联（默认 7） */
-  linkDays?: number }
+  linkDays?: number
+  /** G14 ①：全局重活队列（在旧单元库里，项目巡检读不到自己的库）+ 当前可用内存；排队超过 heavyStuckMs（默认 15 分钟）且门槛高于可用 ⇒ 报 */
+  heavy?: () => { jobs: Array<{ id: number; session: string; label: string; min_free_gb: number; state: string; created_at: string }>; free: number }
+  heavyStuckMs?: number }
 
 export class Patrol {
   constructor(private readonly store: Store, private readonly core: Core, private readonly mem: MemoryLayer | undefined, private readonly clock: Clock, private readonly opts: PatrolOptions) {}
@@ -41,9 +45,30 @@ export class Patrol {
       out.push({ key: `waiting:${w.session}:${w.since}`, text: `⏳ ${w.session} 等用户${w.kind === 'approval' ? '批准' : '回答'}已经 ${min(now - w.since)} 分钟：${w.label}（只能去那个会话里点）` })
     if (this.core.directEnabled) out.push(...this.directFindings(now))
     for (const d of this.store.deliveriesByState('error')) out.push({ key: `delivery-error:${d.key}`, text: `消息投不出去（已放弃重试）：${d.from_id} → ${d.to_id}，${d.key}：${d.last_error}` })
-    const asks = this.store.openAsks()
-    if (asks.length) out.push({ key: `asks:${asks.map(a => a.id).join(',')}`, text: `有 ${asks.length} 件等用户定：${asks.map(a => `${a.code ?? `#${a.id}`}（${a.task}）${a.question.slice(0, 40)}`).join('；')}` })
-    for (const j of this.store.heavyJobs('queued')) out.push({ key: `heavy-queued:${j.id}`, text: `重活 #${j.id}「${j.label}」（${j.session}）排队中` })
+    // G14 审稿 MUST 2：一件一条 key。0.2.0 把所有编号拼成一个 key（asks:3,4），答掉一件 key 就变了，被当成新增照样叫醒总管
+    for (const a of this.store.openAsks()) out.push({ key: `ask:${a.id}`, text: `等用户定：${a.code ?? `#${a.id}`}（${a.task}）${a.question.slice(0, 40)}` })
+    // G14 ③b（T005 待评估第 7 项 ③）：结案任务上来的迟到回报只 inject、不叫醒总管 ⇒ 总管上一轮开始之后来的、7 天内的，报出来（总管跑过一轮就消失）
+    const masterTurn = this.store.getTurn(this.core.masterId)?.started_ms ?? 0
+    for (const e of this.store.events({ type: 'task/late-report' })) {
+      const ms = Date.parse(e.at)
+      if (!(ms > masterTurn) || now - ms > 7 * 86400_000) continue
+      let d: { line?: string; taskState?: string } = {}; try { d = JSON.parse(e.data) } catch { /* 坏数据照报 */ }
+      out.push({ key: `late-report:${e.seq}`, text: `已结案的 ${e.task}（${d.taskState ?? '已结'}）上来了一条迟到回报（${e.session ?? '?'}，${min(now - ms)} 分钟前），你还没看：${d.line ?? ''}。看要不要重开、另派，还是记一笔就行` })
+    }
+    // G14 ①：0.2.0 读的是自己这个库的 heavy_jobs，项目单元里永远是空的（队列在全局库）⇒ 改成读注入的全局队列，只看本项目花名册里的会话
+    const hv = this.opts.heavy?.()
+    if (hv) {
+      const queued = hv.jobs.filter(j => j.state === 'queued')
+      for (const j of queued) {
+        if (!this.store.getSession(j.session)) continue
+        const waited = now - Date.parse(j.created_at)
+        // G14 审稿 SHOULD 5：报过一次的，只要还在排队就一直留着（内存在门槛上下抖时不反复出现 / 消失、反复叫醒总管）
+        const stuck = waited > (this.opts.heavyStuckMs ?? 15 * 60_000) && j.min_free_gb > hv.free
+        if (!stuck && !(`heavy-stuck:${j.id}` in this.reportedKeys())) continue
+        const behind = queued.filter(x => x.id > j.id).length
+        out.push({ key: `heavy-stuck:${j.id}`, text: `重活 #${j.id}「${j.label}」（${j.session}）已排队 ${min(waited)} 分钟：门槛 ${j.min_free_gb} GB，现在可用 ${hv.free.toFixed(1)} GB（${FREE_HOW}），${stuck ? '够不着就一直排着' : '现在已经够了，下一次心跳会开跑（之前卡过，报过一次）'}${behind ? `，后面还排着 ${behind} 件` : ''}。门槛设高了就让成员 heavy_cancel 后用低一点的重提，或者你用 heavy_cancel 取消` })
+      }
+    }
     if (this.mem) {
       // G5-E ⑥ 跨任务关联候选：没结的任务，或最近 7 天还有 devlog 的已结任务；已确认的对不再报
       const tasks = new Map(this.store.listTasks().map(t => [t.id.toUpperCase(), t]))
@@ -91,13 +116,27 @@ export class Patrol {
    * 完全一样就算 0：3090 上两件没回答的等你定让每 6 小时的保底都叫醒模型（4 次 4 次），每次都是同样的发现。
    * 返回 sig 给调用方：真的叫醒了模型以后用 markScheduleSeen 记下。
    */
-  unseenForSchedule(): { count: number; sig: string } {
+  unseenForSchedule(): { count: number; sig: string; keys: string[] } {
     const f = this.findings()
-    const sig = createHash('sha1').update(f.map(x => x.key).sort().join('\n')).digest('hex')
-    if (!f.length || sig === this.store.getMeta('patrol_sig') || sig === this.store.getMeta('schedule_seen_sig')) return { count: 0, sig }
-    return { count: f.length, sig }
+    const keys = f.map(x => x.key)
+    const sig = createHash('sha1').update([...keys].sort().join('\n')).digest('hex')
+    if (!f.length || sig === this.store.getMeta('patrol_sig') || sig === this.store.getMeta('schedule_seen_sig')) return { count: 0, sig, keys }
+    // G14 ②：只有项消失（剩下的都报过 / 保底见过）不算新发现
+    const seen = new Set([...Object.keys(this.reportedKeys()), ...this.metaJson<string[]>('schedule_seen_keys', [])])
+    this.lastUnseen = { sig, keys }
+    return { count: keys.filter(k => !seen.has(k)).length, sig, keys }
   }
-  markScheduleSeen(sig: string): void { this.store.setMeta('schedule_seen_sig', sig) }
+  private lastUnseen: { sig: string; keys: string[] } | undefined
+  /** 记下保底已经叫醒模型看过的发现；keys 不传就用上一次 unseenForSchedule 算出来的（同一个签名时）。 */
+  markScheduleSeen(sig: string, keys?: string[]): void {
+    this.store.setMeta('schedule_seen_sig', sig)
+    const k = keys ?? (this.lastUnseen?.sig === sig ? this.lastUnseen.keys : undefined)
+    if (k) this.store.setMeta('schedule_seen_keys', JSON.stringify(k))
+  }
+
+  private metaJson<T>(key: string, dflt: T): T { try { const v = this.store.getMeta(key); return v ? JSON.parse(v) as T : dflt } catch { return dflt } }
+  /** G14 ②：上次报给总管（或只消失时记下）的发现 key → 文字（报文里列「已消失」要用文字）。0.2.0 升上来没有这一项 ⇒ 空。 */
+  private reportedKeys(): Record<string, string> { return this.metaJson<Record<string, string>>('patrol_keys', {}) }
 
   /** 定时调用：返回 quiet（无变化，零投递）/ reported（投了一条）/ cleared（发现清空了）。 */
   tick(): 'quiet' | 'reported' | 'cleared' {
@@ -105,12 +144,27 @@ export class Patrol {
     const f = this.findings()
     const sig = createHash('sha1').update(f.map(x => x.key).sort().join('\n')).digest('hex')
     if (sig === this.store.getMeta('patrol_sig')) return 'quiet'
+    const old = this.reportedKeys()
     this.store.setMeta('patrol_sig', sig)
+    this.store.setMeta('patrol_keys', JSON.stringify(Object.fromEntries(f.map(x => [x.key, x.text.slice(0, 120)]))))
     if (this.mem) this.store.setMeta('patrol_drift_seq', String(this.mem.docs.lastLogSeq()))
     if (!f.length) return 'cleared'
+    // G14 ②（照 Claude Code 看板 gone_only）：剩下的都报过、只是有项消失了（等你定答完、投递错误清掉……）⇒ 不叫醒总管
+    const added = f.filter(x => !(x.key in old))
+    const gone = Object.entries(old).filter(([k]) => !f.some(x => x.key === k)).map(([, t]) => t)
+    if (!added.length) {
+      this.store.addEvent({ at: bjtIso(this.clock()), type: 'patrol/gone-only', data: { sig, gone: gone.length } })
+      return 'quiet'
+    }
+    const kept = f.filter(x => x.key in old)
     this.store.addEvent({ at: bjtIso(this.clock()), type: 'patrol/report', data: { sig, keys: f.map(x => x.key) } })
+    const text = [`巡检发现 ${f.length} 项（和上次不同才会发；要看全部用 master_patrol）：`,
+      `新增 ${added.length} 项：`, ...added.map(x => `- ${x.text}`),
+      ...(gone.length ? [`已消失、不用处理：${gone.join('；')}`] : []),
+      ...(kept.length ? [`之前报过、还在 ${kept.length} 项：`, ...kept.map(x => `- ${x.text}`)] : [])].join('\n')
     try {
-      this.core.systemNotify({ key: `patrol:${sig.slice(0, 16)}`, to: this.core.masterId, label: '巡检', text: `巡检发现 ${f.length} 项（和上次不同才会发；要看全部用 master_patrol）：\n${f.map(x => `- ${x.text}`).join('\n')}` })
+      this.core.systemNotify({ key: `patrol:${sig.slice(0, 16)}`, to: this.core.masterId, label: '巡检', text })
+      this.core.noteWake('patrol', added.map(x => x.key)) // G14 ⑧
     } catch { /* 限频：签名已记下，下次变化再说 */ }
     return 'reported'
   }

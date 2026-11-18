@@ -64,3 +64,23 @@ export function listGroups<T extends ListTask>(tasks: T[], opts: { mine: boolean
     g('older', '更早', older, true),
   ].filter(x => x.list.length)
 }
+
+// ---------------- G14 ⑦ 搜索 / 筛选（照 Claude Code 看板 T020 P2 的规则，只在前端做，搜当前视图）----------------
+export interface SearchTask extends BoardTask { title: string; owner: string; alias?: string | null; lastLine?: string | null }
+/** 全角转半角（NFKC）+ 不分大小写 */
+export const normSearch = (s: string): string => s.normalize('NFKC').toLowerCase()
+/** 多词都要中（可以中在不同字段）：编号、标题、叫法、负责、最后一句回报；再叠加状态 / 负责筛选。 */
+export function matchTasks<T extends SearchTask>(tasks: T[], q: string, f: { state?: string; owner?: string }): T[] {
+  const words = normSearch(q).split(/\s+/).filter(Boolean)
+  return tasks.filter(t => {
+    if (f.state && t.state !== f.state) return false
+    if (f.owner && t.owner !== f.owner) return false
+    if (!words.length) return true
+    const hay = normSearch([t.id, t.title, t.alias ?? '', t.owner, t.lastLine ?? ''].join('\n'))
+    return words.every(w => hay.includes(w))
+  })
+}
+/** 下拉选项按实际出现的值生成 */
+export function filterOptions(tasks: SearchTask[]): { states: string[]; owners: string[] } {
+  return { states: [...new Set(tasks.map(t => t.state))].sort(), owners: [...new Set(tasks.map(t => t.owner))].sort() }
+}

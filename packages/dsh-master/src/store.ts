@@ -67,13 +67,28 @@ const MIGRATIONS: string[] = [
    UPDATE asks SET code = 'Q' || substr(created_at, 6, 2) || substr(created_at, 9, 2) || '-' ||
      (SELECT count(*) FROM asks a2 WHERE substr(a2.created_at, 1, 10) = substr(asks.created_at, 1, 10) AND a2.id <= asks.id);
    CREATE UNIQUE INDEX asks_code ON asks(code);`,
+  // v5（G14 ①）：重活可以取消 ⇒ 状态加 cancelled（SQLite 改不了 CHECK，只能建新表拷数据；id 原样拷，AUTOINCREMENT 序号跟着改名走）
+  `CREATE TABLE heavy_jobs_v5(
+     id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, label TEXT NOT NULL, command TEXT NOT NULL, cwd TEXT NOT NULL, min_free_gb REAL NOT NULL,
+     state TEXT NOT NULL CHECK(state IN ('queued','running','done','failed','cancelled')), exit_code INTEGER, log TEXT NOT NULL,
+     created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT);
+   INSERT INTO heavy_jobs_v5(id, session, label, command, cwd, min_free_gb, state, exit_code, log, created_at, started_at, ended_at)
+     SELECT id, session, label, command, cwd, min_free_gb, state, exit_code, log, created_at, started_at, ended_at FROM heavy_jobs;
+   DROP TABLE heavy_jobs;
+   ALTER TABLE heavy_jobs_v5 RENAME TO heavy_jobs;`,
+  // v6（G14 ⑤）：总管的跟进提醒（承诺落库，压缩后不丢；到点投给总管）
+  `CREATE TABLE reminders(
+     id INTEGER PRIMARY KEY AUTOINCREMENT, task TEXT, at TEXT NOT NULL, at_ms INTEGER NOT NULL, text TEXT NOT NULL, created_by TEXT NOT NULL,
+     state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','done','cancelled')), created_at TEXT NOT NULL, done_at TEXT);
+   CREATE INDEX reminders_due ON reminders(state, at_ms);`,
 ]
 /** 当前库结构版本（自检命令用它判断库和插件是否匹配）。 */
 export const SCHEMA_VERSION = MIGRATIONS.length
 
 
+export interface ReminderRow { id: number; task: string | null; at: string; at_ms: number; text: string; created_by: string; state: 'pending' | 'done' | 'cancelled'; created_at: string; done_at: string | null }
 export interface TurnRow { session: string; started_ms: number | null; last_report_ms: number | null }
-export interface HeavyJobRow { id: number; session: string; label: string; command: string; cwd: string; min_free_gb: number; state: 'queued' | 'running' | 'done' | 'failed'; exit_code: number | null; log: string; created_at: string; started_at: string | null; ended_at: string | null }
+export interface HeavyJobRow { id: number; session: string; label: string; command: string; cwd: string; min_free_gb: number; state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'; exit_code: number | null; log: string; created_at: string; started_at: string | null; ended_at: string | null }
 
 export class Store {
   readonly db: DatabaseSync
@@ -230,6 +245,15 @@ export class Store {
     if (at) this.setMeta(`focus:${task}`, at)
     else this.db.prepare('DELETE FROM meta WHERE k = ?').run(`focus:${task}`)
   }
+  /** G14 ⑨：按前缀存的任务标记（hide: / archive: / restore:），值是北京时间 ISO。 */
+  setMark(prefix: string, task: string, at: string | null): void {
+    if (at) this.setMeta(`${prefix}${task}`, at)
+    else this.db.prepare('DELETE FROM meta WHERE k = ?').run(`${prefix}${task}`)
+  }
+  markMap(prefix: string): Map<string, string> {
+    const rows = this.db.prepare('SELECT k, v FROM meta WHERE k LIKE ?').all(`${prefix}%`) as Array<{ k: string; v: string }>
+    return new Map(rows.map(r => [r.k.slice(prefix.length), r.v]))
+  }
   focusMap(): Map<string, string> {
     const rows = this.db.prepare("SELECT k, v FROM meta WHERE k LIKE 'focus:%'").all() as Array<{ k: string; v: string }>
     return new Map(rows.map(r => [r.k.slice('focus:'.length), r.v]))
@@ -240,6 +264,7 @@ export class Store {
     return Number(this.db.prepare(`INSERT INTO heavy_jobs(session, label, command, cwd, min_free_gb, state, log, created_at) VALUES(?,?,?,?,?,'queued',?,?)`)
       .run(j.session, j.label, j.command, j.cwd, j.min_free_gb, j.log, j.created_at).lastInsertRowid)
   }
+  heavyJob(id: number): HeavyJobRow | undefined { return this.db.prepare('SELECT * FROM heavy_jobs WHERE id = ?').get(id) as unknown as HeavyJobRow | undefined }
   heavyJobs(state?: HeavyJobRow['state']): HeavyJobRow[] {
     return (state ? this.db.prepare('SELECT * FROM heavy_jobs WHERE state = ? ORDER BY id').all(state) : this.db.prepare('SELECT * FROM heavy_jobs ORDER BY id').all()) as unknown as HeavyJobRow[]
   }
@@ -248,6 +273,16 @@ export class Store {
     this.db.prepare('UPDATE heavy_jobs SET state = ?, exit_code = ?, started_at = ?, ended_at = ? WHERE id = ?')
       .run(patch.state, patch.exit_code ?? cur.exit_code, patch.started_at ?? cur.started_at, patch.ended_at ?? cur.ended_at, id)
   }
+
+  // ---- reminders（G14 ⑤）----
+  addReminder(r: { task: string | null; at: string; at_ms: number; text: string; created_by: string; created_at: string }): number {
+    return Number(this.db.prepare('INSERT INTO reminders(task, at, at_ms, text, created_by, created_at) VALUES(?,?,?,?,?,?)').run(r.task, r.at, r.at_ms, r.text, r.created_by, r.created_at).lastInsertRowid)
+  }
+  reminders(state?: ReminderRow['state']): ReminderRow[] {
+    return (state ? this.db.prepare('SELECT * FROM reminders WHERE state = ? ORDER BY at_ms, id').all(state) : this.db.prepare('SELECT * FROM reminders ORDER BY id').all()) as unknown as ReminderRow[]
+  }
+  getReminder(id: number): ReminderRow | undefined { return this.db.prepare('SELECT * FROM reminders WHERE id = ?').get(id) as unknown as ReminderRow | undefined }
+  setReminderState(id: number, state: ReminderRow['state'], at: string): void { this.db.prepare('UPDATE reminders SET state = ?, done_at = ? WHERE id = ?').run(state, at, id) }
 
   // ---- asks ----
   addAsk(a: { task: string; question: string; options: string[]; at: string }): number {
@@ -268,6 +303,7 @@ export class Store {
   }
   gatesFor(task: string): GateRow[] { return this.db.prepare('SELECT * FROM gates WHERE task = ? ORDER BY ord').all(task) as unknown as GateRow[] }
   gateDef(task: string, gate: string): GateRow | undefined { return this.db.prepare('SELECT * FROM gates WHERE task = ? AND gate = ?').get(task, gate) as GateRow | undefined }
+  findAskByCode(code: string): AskRow | undefined { return this.db.prepare('SELECT * FROM asks WHERE code = ?').get(code) as AskRow | undefined }
   getAsk(id: number): AskRow | undefined { return this.db.prepare('SELECT * FROM asks WHERE id = ?').get(id) as AskRow | undefined }
   answerAsk(id: number, answer: string, at: string): boolean {
     return Number(this.db.prepare(`UPDATE asks SET state = 'answered', answer = ?, answered_at = ? WHERE id = ? AND state = 'open'`).run(answer, at, id).changes) > 0

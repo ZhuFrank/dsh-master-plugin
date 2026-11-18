@@ -34,10 +34,14 @@ A single DSH session works well for a single task. Once you have several streams
 | **Talk to a member directly** *(0.2.0)* | You can talk to a member in its own session without waking the master: a turn you open does not trigger the "no report" reminder, answering a *needs you* card on the board goes straight to the member in charge (the master only gets a note), and patrol tells the master about direct conversations that change a conclusion or need its decision. Set `directToMember: false` for the old behaviour. |
 | **Master status bar** *(0.2.0)* | The top of the board shows what the master is doing (tool name plus the model's one-line description, never the full command), when the next safety-net run is due, and three clickable counts: needs you, waiting for your click, blocked. Members on duty are listed with their open tasks. |
 | **Focus & date groups** *(0.2.0)* | Star a task to pin it in a ★ Focus group. The default list shows the last 5 days grouped by date, older work is collapsed, and each group can be folded. |
+| **Heavy-job queue, smarter** *(0.2.1)* | If the job at the head of the queue needs more free memory than there is, smaller jobs behind it run first. `heavy_cancel` cancels a queued job and `heavy_status` shows the queue and the free memory the plugin sees. A threshold above the machine's total memory is refused, one above current free memory gets a warning, and patrol tells the master about a job stuck for 15 minutes. |
+| **Follow-up reminders** *(0.2.1)* | `master_remind` ("2026-11-28 10:00", "3h", "2d") stores a reminder in the project database; when it is due the master is woken with the text. Reminders missed while DSH was off are delivered late, saying how late. The status bar shows the next one. |
+| **Board: search, hide, archive, your own names** *(0.2.1)* | Search tasks by ID, title, owner or last report and filter by state or owner. Hide any task, or archive a finished one right away (both undoable for 5 s). Give a task a name you remember; the master and members are told and see it next to the ID in every plugin message. |
+| **Quieter, more reliable master** *(0.2.1)* | Patrol no longer wakes the master when findings only disappear. Answering a "needs you" card on a closed task goes to the master and wakes it. Late reports on closed tasks are surfaced by patrol. A "needs you" open for more than 2 hours turns red. After a compaction the master or member gets its open tasks, open questions and its handbook's "standard practice" inline. Long report bodies are trimmed for the master (full text kept). `master_ask_close` closes a question you answered in the conversation. |
 
 ## Requirements
 
-- DeepSeek Harness **`dsh web`**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5` and `0.2.2-rc.1`.
+- DeepSeek Harness **`dsh web`**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5`, `0.2.2-rc.1` and `0.2.2-rc.4`. Known on 0.2.2: after you answer a question card in the host, the board's "waiting for your click" banner sometimes stays a little longer than it should (the plugin only shows the reminder; the answer itself is handled by DSH). 0.2.0 behaves the same; it is being looked into.
 - Node.js **>= 22.19** (the plugin uses the built-in `node:sqlite`). DSH 0.2.2 itself needs Node >= 24.9.
 - On DSH 0.2.2, the host's "read before write" guard (`fs-observation-policy` in the `dsh-base` bundle) is **off by default**. While it is off, two members editing the same file are not stopped by the host, so the plugin's "optimistic lock" conflict notice does not fire. Task claims (a member writing into another task's claimed paths is blocked) are the plugin's own and still work. To turn the guard on, set that entry to `disabled: false` in your profile; this applies to every session in the profile, so the plugin does not change it for you.
 - macOS is the only platform tested so far.
@@ -51,7 +55,7 @@ A single DSH session works well for a single task. Once you have several streams
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
 ```
 
 Start `dsh web` again and reload the page.
@@ -61,7 +65,7 @@ Start `dsh web` again and reload the page.
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # create the profile once
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
 dsh --profile master --port 3090                                            # then open http://127.0.0.1:3090
 ```
 
@@ -77,7 +81,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 
 ## Quick start
 
-1. Click **New session**, pick your project folder, and choose the **dsh-master 总管** agent preset. Send it a first message: the folder is now a project, and this session is its master.
+1. Click **New session**, pick your project folder, and choose the **dsh-master 总管** agent preset. That's it: as soon as the preset is selected, the folder becomes a project and this session becomes its master. You don't need to send a message first; the master runs one short turn on its own to read the opening notice.
 2. Tell the master what you want done. It decides whether the work is heavy or light, writes a task spec for heavy work, creates members (`master_spawn`) and dispatches.
 3. Open **总管看板** (the "master board"), either from the left sidebar or from the session header, to follow along. Cards under **等你处理** need you: answer the question, or open the session that is waiting for an approval.
 4. When a member reaches a gate, the master checks the products and records the review. You decide whether to continue.

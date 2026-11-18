@@ -5,7 +5,7 @@
 import path from 'node:path'
 import type { Store, TaskRow } from './store.ts'
 import { Core, ToolInputError, TERMINAL_TASK_STATES } from './core.ts'
-import { filterTasks, type PanelAction, type PanelView } from './panel-api.ts'
+import { filterTasks, viewState, type PanelAction, type PanelView, type ViewMarks } from './panel-api.ts'
 import type { Attribution } from './attrib.ts'
 import { findPaths } from './paths.ts'
 import { bjtIso, bjtStamp, type Clock } from './time.ts'
@@ -28,22 +28,30 @@ export function gateKey(g: unknown): string | undefined {
   return g.trim().match(/^G\d+[a-z]?/i)?.[0].toUpperCase().replace(/^G(\d+)([A-Z]?)$/, (_m, n, x) => `G${n}${x.toLowerCase()}`) ?? g.trim()
 }
 
-const HIDDEN_EVENTS = new Set(['message/queued', 'message/delivered', 'message/retry'])
+const HIDDEN_EVENTS = new Set(['message/queued', 'message/delivered', 'message/retry', 'view/changed'])
+
+/** G14 ③c：等你定挂多久算超时（状态栏标红）。 */
+export const ASK_OVERDUE_MS = 2 * 3600_000
 
 export class PanelService {
   constructor(private readonly store: Store, private readonly core: Core, private readonly attrib: Attribution, private readonly port: PanelPort, private readonly clock: Clock) {}
 
   // ---------------- 读 ----------------
   state(q: { view?: string; from?: string; to?: string }) {
-    const view: PanelView = q.view === 'archived' ? 'archived' : q.view === 'all' ? 'all' : 'active'
+    const view: PanelView = q.view === 'archived' ? 'archived' : q.view === 'all' ? 'all' : q.view === 'hidden' ? 'hidden' : 'active'
     const date = (v?: string) => v && /^\d{4}-\d\d-\d\d$/.test(v) ? v : undefined
     const now = this.clock()
     const asks = this.store.openAsks()
     const focus = this.store.focusMap()
-    const tasks = filterTasks(this.store.listTasks(), view, now, { from: date(q.from), to: date(q.to) }, new Set(asks.map(a => a.task)), new Set(focus.keys()))
+    const marks = this.viewMarks(asks)
+    const all = this.store.listTasks()
+    const tasks = filterTasks(all, view, now, { from: date(q.from), to: date(q.to) }, new Set(asks.map(a => a.task)), new Set(focus.keys()), marks)
+    const openAsk = new Set(asks.map(a => a.task)); const focusSet = new Set(focus.keys())
     return {
       now: bjtStamp(now), view,
-      tasks: tasks.map(t => this.taskCard(t, asks)),
+      tasks: tasks.map(t => ({ ...this.taskCard(t, asks), hidden: viewState(t, now, openAsk, focusSet, marks).hidden, archivedManual: marks.archived.has(t.id) })),
+      // G14 ⑨：「已收起（n）」按钮
+      hiddenCount: all.filter(t => viewState(t, now, openAsk, focusSet, marks).hidden).length,
       asks: asks.map(a => ({ id: a.id, code: a.code, task: a.task, question: a.question, options: JSON.parse(a.options), at: bjtStamp(Date.parse(a.created_at)) })),
       // 看板里文件链接的白名单根目录之一（另一类是花名册会话的工作目录）
       docsRoot: this.core.mem ? this.core.mem.docs.abs('') : null,
@@ -59,11 +67,17 @@ export class PanelService {
   statusBar(x: { doing?: Doing | undefined; waitingCount: number; nextSchedule?: string | null | undefined }) {
     const tasks = this.store.listTasks()
     const open = tasks.filter(t => !TERMINAL_TASK_STATES.has(t.state))
+    const asks = this.store.openAsks(); const now = this.clock()
     const at = (iso: string | null | undefined) => { const ms = iso ? Date.parse(iso) : NaN; return Number.isFinite(ms) ? bjtStamp(ms) : null }
     return {
       master: { id: this.core.masterId, live: this.core.port.status(this.core.masterId), doing: x.doing?.label ?? null, doingAt: x.doing ? bjtStamp(x.doing.atMs) : null },
       nextSchedule: at(x.nextSchedule),
-      counts: { asks: this.store.openAsks().length, waiting: x.waitingCount, blocked: open.filter(t => t.state === '受阻').length },
+      // G14 ⑤：下次到点提醒
+      nextReminder: (() => { const r = this.store.reminders('pending')[0]; return r ? { at: bjtStamp(r.at_ms), text: r.text } : null })(),
+      counts: { asks: asks.length, waiting: x.waitingCount, blocked: open.filter(t => t.state === '受阻').length,
+        // G14 ③c：等你定最早一件挂了多久；超过 2 小时状态栏标红（照 Claude Code 看板 T031 的「超 2 小时没回标红」）
+        asksOverdue: asks.filter(q => now - Date.parse(q.created_at) > ASK_OVERDUE_MS).length,
+        asksOldestMin: asks.length ? Math.round((now - Math.min(...asks.map(q => Date.parse(q.created_at)))) / 60_000) : null },
       members: this.store.listSessions().filter(s => s.role === 'exec' && s.status === 'active').map(s => ({
         id: s.id, title: s.title, live: this.core.port.status(s.id),
         tasks: open.filter(t => t.owner === s.id).map(t => ({ id: t.id, state: t.state, gate: t.gate })),
@@ -75,9 +89,22 @@ export class PanelService {
    * G11-1：关于这件任务，用户该找谁说话。消息直送开着、负责人是在岗成员 ⇒ 成员；
    * 负责人是总管自己、没有这个任务 / 负责人、负责人已关闭、消息直送关了 ⇒ 总管。
    */
+  /** G14 ⑨：收起之后又来了新回报 / 新等你定的，不再算收起（自动回到列表）。 */
+  private viewMarks(asks: ReturnType<Store['openAsks']>): ViewMarks {
+    const hidden = new Set<string>()
+    for (const [task, at] of this.store.markMap('hide:')) {
+      const since = Date.parse(at)
+      const ev = this.store.events({ task }).filter(e => e.type === 'task/report' || e.type === 'task/late-report' || e.type === 'ask/open').at(-1)
+      const newer = (ev && Date.parse(ev.at) > since) || asks.some(a => a.task === task && Date.parse(a.created_at) > since)
+      if (!newer) hidden.add(task)
+    }
+    return { hidden, archived: new Set(this.store.markMap('archive:').keys()), restored: new Set(this.store.markMap('restore:').keys()) }
+  }
+
   talkTo(task: string): string {
-    const owner = this.store.getTask(task)?.owner
-    if (!this.core.directEnabled || !owner || owner === this.core.masterId || this.core.roleOf(owner) !== 'exec') return this.core.masterId
+    const t = this.store.getTask(task); const owner = t?.owner
+    // G14 ③a（T005 待评估第 7 项 ①）：任务已结案 ⇒ 交给总管（叫醒）。直送给成员的话成员接着干、回报成了迟到回报，总管不会醒（彩排、T018 各碰到一次）
+    if (!this.core.directEnabled || !owner || owner === this.core.masterId || this.core.roleOf(owner) !== 'exec' || TERMINAL_TASK_STATES.has(t!.state)) return this.core.masterId
     return owner
   }
 
@@ -86,7 +113,10 @@ export class PanelService {
     const focusAt = this.store.getMeta(`focus:${t.id}`)
     return { id: t.id, kind: t.kind, title: t.title, owner: t.owner, talkTo: this.talkTo(t.id), focus: !!focusAt, focusAt: focusAt ? bjtStamp(Date.parse(focusAt)) : null, state: t.state, gate: t.gate, closed: TERMINAL_TASK_STATES.has(t.state),
       created: bjtStamp(Date.parse(t.created_at)), updated: bjtStamp(Date.parse(t.updated_at)), openAsks: asks.filter(a => a.task === t.id).length,
-      last: last ? { type: last.type, at: bjtStamp(Date.parse(last.at)) } : null }
+      last: last ? { type: last.type, at: bjtStamp(Date.parse(last.at)) } : null,
+      alias: this.core.aliasOf(t.id), // G14 ⑩
+      // G14 ⑦：搜索用的最后一句回报
+      lastLine: (() => { const r = this.store.events({ task: t.id, type: 'task/report' }).at(-1); try { return r ? String(JSON.parse(r.data).line ?? '') : null } catch { return null } })() }
   }
 
   thread(task: string | null) {
@@ -112,7 +142,9 @@ export class PanelService {
     const sp = this.core.spec(t.id)
     const cl = this.core.claimOf(t.id); const root = this.core.opts.projectRoot
     const claims = cl && root ? { paths: cl.paths.map(p => path.relative(root, p) || p), active: this.core.activeClaims().some(c => c.task === t.id), reason: cl.reason ?? null } : null
-    return { task: { ...this.taskCard(t, this.store.openAsks()), claims, gates: this.gatesOf(t.id, t.gate), specPath: sp && this.core.mem ? this.core.mem.docs.abs(sp.file) : null, output: sp?.output ?? null, products: this.productsOf(t.id, sp?.output) }, items }
+    return { task: { ...this.taskCard(t, this.store.openAsks()), claims, gates: this.gatesOf(t.id, t.gate),
+      // G14 审稿 SHOULD 7 ⑤：这件任务挂着的到点提醒
+      reminders: this.store.reminders('pending').filter(r => r.task === t.id).map(r => ({ id: r.id, at: bjtStamp(r.at_ms), text: r.text })), specPath: sp && this.core.mem ? this.core.mem.docs.abs(sp.file) : null, output: sp?.output ?? null, products: this.productsOf(t.id, sp?.output) }, items }
   }
 
   /** 产物：回报里出现过的文件路径（新的在前）+ 任务书写的产物目录。 */
@@ -252,6 +284,39 @@ export class PanelService {
         if (!this.store.getTask(a.task)) throw new PanelError('not_found', `没有任务 ${a.task}`)
         this.store.setFocus(a.task, a.on ? bjtIso(now) : null)
         return { ok: true, task: a.task, focus: a.on }
+      }
+      // G14 ⑨：收起 / 归档；返回 undo（反向动作），看板 5 秒内可撤销
+      case 'hide': case 'unhide': case 'archive': case 'restore': case 'setmarks': {
+        const t = this.store.getTask(a.task)
+        if (!t) throw new PanelError('not_found', `没有任务 ${a.task}`)
+        const at = bjtIso(now)
+        // G14 审稿 SHOULD 3：撤销 = 动作前三个标记的原样快照（原来撤销归档会留下 restore:，任务再也不自动归档）
+        const meta = (k: string) => this.store.getMeta(`${k}:${a.task}`) || null
+        const before = { hide: meta('hide'), archive: meta('archive'), restore: meta('restore') }
+        // G14 复核：设归档标记（archive / setmarks 写回归档）都要过这两条检查，不然撤销框、手工请求能把没结束的、挂着等你定的任务藏进已归档
+        const canArchive = () => {
+          if (!TERMINAL_TASK_STATES.has(t.state)) throw new PanelError('bad_state', `${a.task} 还没结束（${t.state}），只能归档已结束的任务；不想看到可以先收起`)
+          if (this.store.openAsks().some(q => q.task === a.task)) throw new PanelError('bad_state', `${a.task} 还挂着等你定，答了再归档`)
+        }
+        if (a.action === 'setmarks') {
+          if (a.marks.archive && !before.archive) canArchive()
+          for (const k of ['hide', 'archive', 'restore'] as const) this.store.setMark(`${k}:`, a.task, a.marks[k])
+          this.store.addEvent({ at, task: a.task, type: 'view/changed', data: { action: 'setmarks', marks: a.marks } })
+          return { ok: true, task: a.task, action: 'setmarks', undo: { action: 'setmarks', task: a.task, marks: before } }
+        }
+        if (a.action === 'hide') this.store.setMark('hide:', a.task, at)
+        if (a.action === 'unhide') this.store.setMark('hide:', a.task, null)
+        if (a.action === 'archive') {
+          canArchive()
+          this.store.setMark('archive:', a.task, at) // 手动归档不看 restore:，不用清它（撤销时原样留着）
+        }
+        if (a.action === 'restore') { this.store.setMark('archive:', a.task, null); this.store.setMark('restore:', a.task, at) }
+        this.store.addEvent({ at, task: a.task, type: 'view/changed', data: { action: a.action } })
+        return { ok: true, task: a.task, action: a.action, undo: { action: 'setmarks', task: a.task, marks: before } }
+      }
+      case 'alias': {
+        try { const r = this.core.setAlias(a.task, a.alias); return { ok: true, task: a.task, alias: r.alias, undo: { action: 'alias', task: a.task, alias: r.old ?? '' } } }
+        catch (e) { if (e instanceof ToolInputError) throw new PanelError('bad_input', e.message); throw e }
       }
       // G8：暂停 / 恢复在入口里处理（要删建宿主定时任务），不该走到这里
       case 'pause': case 'resume': throw new PanelError('bad_state', '暂停 / 恢复要经入口处理')

@@ -166,11 +166,11 @@ describe('G6-1 迁移（v3 → v4）与回退', () => {
       v3.db.prepare('INSERT INTO asks(task, question, options, created_at) VALUES(?,?,?,?)').run('L1103-1', `问 ${at}`, '[]', at)
     void old; v3.db.close()
     const v4 = new Store(file)
-    expect(v4.version).toBe(SCHEMA_VERSION); expect(SCHEMA_VERSION).toBe(4)
+    expect(v4.version).toBe(SCHEMA_VERSION); expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(4) // G14 起还有 v5+；最新版本号钉在 g14.test.ts
     expect(v4.getTask('L1103-1')!.title).toBe('旧任务')
     expect(v4.asksFor('L1103-1').map(a => a.code)).toEqual(['Q1103-1', 'Q1103-2', 'Q1104-1'])
     expect(v4.gatesFor('L1103-1')).toEqual([])
-    const bak = `${file}.pre-v4.bak`
+    const bak = `${file}.pre-v${SCHEMA_VERSION}.bak` // 升到最新版本时的备份名（G14 起最新是 v5+）
     expect(fs.existsSync(bak)).toBe(true)
     expect((fs.statSync(bak).mode & 0o777).toString(8)).toBe('600')
     // 新库里接着加：当天编号接着往下

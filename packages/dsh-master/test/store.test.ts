@@ -1,12 +1,12 @@
 import fs from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import { tmpStore } from './helpers.ts'
-import { Store } from '../src/store.ts'
+import { Store, SCHEMA_VERSION } from '../src/store.ts'
 
 describe('Store', () => {
   it('建库：迁移到最新版本、WAL、文件权限 0600', () => {
     const s = tmpStore()
-    expect(s.version).toBe(4)
+    expect(s.version).toBe(SCHEMA_VERSION)
     expect((s.db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal')
     expect(fs.statSync(s.file).mode & 0o777).toBe(0o600)
   })
@@ -42,7 +42,7 @@ describe('Store', () => {
     const s = tmpStore()
     s.addEvent({ at: 'a', type: 'keep' }); s.close()
     const again = new Store(s.file)
-    expect(again.version).toBe(4)
+    expect(again.version).toBe(SCHEMA_VERSION)
     expect(again.events().map((e: any) => e.type)).toEqual(['keep'])
   })
 })

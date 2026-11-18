@@ -48,22 +48,34 @@ export async function readLimited(req: Request, limit: number, drainLimit = limi
 export async function drain(req: Request, limit = 1024 * 1024): Promise<void> { await readLimited(req, 0, limit).catch(() => {}) }
 
 // ---------------- 视图 ----------------
-export type PanelView = 'active' | 'archived' | 'all'
+export type PanelView = 'active' | 'archived' | 'all' | 'hidden'
+/** G14 ⑨：手动标记。hidden 只放「收起后没有新动静」的（新回报 / 新等你定会让它自动回来，由调用方算好）。 */
+export interface ViewMarks { hidden: Set<string>; archived: Set<string>; restored: Set<string> }
+export interface ViewMarkSnapshot { hide: string | null; archive: string | null; restore: string | null }
 const ms = (iso: string) => Date.parse(iso) || 0
 /** 「进行中 + 结束 7 天内」/「已归档」（结束超过 7 天）；可再按派出日期（北京时间 YYYY-MM-DD，含首尾）筛。 */
 /** openAsk：还挂着没回答的等你定的任务 ID（G7 ⑨：这些任务就算结案超过 7 天也不进已归档，问题不能被藏起来）。 */
-export function filterTasks(tasks: TaskRow[], view: PanelView, now: number, range: { from?: string; to?: string } = {}, openAsk: Set<string> = new Set(), focus: Set<string> = new Set()): TaskRow[] {
+export function filterTasks(tasks: TaskRow[], view: PanelView, now: number, range: { from?: string; to?: string } = {}, openAsk: Set<string> = new Set(), focus: Set<string> = new Set(),
+  marks: ViewMarks = { hidden: new Set(), archived: new Set(), restored: new Set() }): TaskRow[] {
   const day = (iso: string) => iso.slice(0, 10) // 存的就是 +08:00 的 ISO，前 10 位即北京日期
   return tasks.filter(t => {
-    const ended = TERMINAL_TASK_STATES.has(t.state)
-    // G11-3：置顶（Focus）的已结任务不归档，一直留在默认视图，直到用户取消置顶
-    const old = ended && !openAsk.has(t.id) && !focus.has(t.id) && now - ms(t.updated_at) > PANEL_LIMITS.archiveAfterMs
-    if (view === 'active' && old) return false
-    if (view === 'archived' && !old) return false
+    const { archived: isArch, hidden: isHidden } = viewState(t, now, openAsk, focus, marks)
+    if (view === 'active' && (isArch || isHidden)) return false
+    if (view === 'archived' && !isArch) return false
+    if (view === 'hidden' && !isHidden) return false
     if (range.from && day(t.created_at) < range.from) return false
     if (range.to && day(t.created_at) > range.to) return false
     return true
   })
+}
+
+/** G14 ⑨：一件任务在看板上算不算归档 / 收起。归档优先于收起；手动归档优先于 Focus；恢复过的不再自动归档。 */
+export function viewState(t: TaskRow, now: number, openAsk: Set<string>, focus: Set<string>, marks: ViewMarks): { archived: boolean; hidden: boolean } {
+  const ended = TERMINAL_TASK_STATES.has(t.state)
+  // G11-3：置顶（Focus）的已结任务不自动归档，一直留在默认视图，直到用户取消置顶
+  const old = ended && !openAsk.has(t.id) && !focus.has(t.id) && now - ms(t.updated_at) > PANEL_LIMITS.archiveAfterMs
+  const archived = marks.archived.has(t.id) || (old && !marks.restored.has(t.id))
+  return { archived, hidden: !archived && marks.hidden.has(t.id) }
 }
 
 // ---------------- 动作 ----------------
@@ -76,6 +88,12 @@ export type PanelAction =
   | { action: 'resume' }
   /** G11-3：任务置顶到「★ Focus」区（存项目库，手机电脑一致） */
   | { action: 'focus'; task: string; on: boolean }
+  /** G14 ⑨：收起 / 取消收起 / 归档 / 恢复（存项目库） */
+  | { action: 'hide' | 'unhide' | 'archive' | 'restore'; task: string }
+  /** G14 审稿 SHOULD 3：撤销 = 把动作前的三个标记原样写回（hide / archive / restore，null = 没有） */
+  | { action: 'setmarks'; task: string; marks: ViewMarkSnapshot }
+  /** G14 ⑩：任务叫法（'' = 恢复原标题） */
+  | { action: 'alias'; task: string; alias: string }
 
 const TASK_ID = /^(T\d{3,}|L\d{4}-\d+)$/
 const SESSION_ID = /^[A-Za-z0-9_.:-]{1,80}$/
@@ -122,6 +140,27 @@ export function validateAction(body: unknown): PanelAction | { error: string } {
       if (!TASK_ID.test(task!)) return { error: 'task 格式不对' }
       if (typeof b.on !== 'boolean') return { error: 'on 必须是 true / false' }
       return { action: 'focus', task: task!, on: b.on }
+    }
+    case 'hide': case 'unhide': case 'archive': case 'restore': {
+      const task = s('task', 20); if (isErr(task)) return task
+      if (!TASK_ID.test(task!)) return { error: 'task 格式不对' }
+      return { action: b.action, task: task! }
+    }
+    case 'setmarks': {
+      const task = s('task', 20); if (isErr(task)) return task
+      if (!TASK_ID.test(task!)) return { error: 'task 格式不对' }
+      const m = b.marks as Record<string, unknown> | undefined
+      if (!m || typeof m !== 'object') return { error: 'marks 必须是对象' }
+      const ok = (v: unknown) => v === null || (typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+08:00$/.test(v))
+      if (!ok(m.hide) || !ok(m.archive) || !ok(m.restore)) return { error: 'marks 里的值要么是 null，要么是北京时间 ISO' }
+      return { action: 'setmarks', task: task!, marks: { hide: m.hide as string | null, archive: m.archive as string | null, restore: m.restore as string | null } }
+    }
+    case 'alias': {
+      const task = s('task', 20); if (isErr(task)) return task
+      if (!TASK_ID.test(task!)) return { error: 'task 格式不对' }
+      if (typeof b.alias !== 'string') return { error: 'alias 必须是字符串（空 = 恢复原标题）' }
+      if (b.alias.length > 200) return { error: 'alias 太长' }
+      return { action: 'alias', task: task!, alias: b.alias }
     }
     default: return { error: `不支持的动作：${String(b.action)}` }
   }

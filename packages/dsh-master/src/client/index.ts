@@ -8,7 +8,7 @@
  */
 import * as React from 'react'
 import { findPaths } from '../paths.ts'
-import { NEEDS_YOU, needsYou, stateLabel, listGroups, orphanAsks } from '../board-groups.ts'
+import { NEEDS_YOU, needsYou, stateLabel, listGroups, orphanAsks, matchTasks, filterOptions } from '../board-groups.ts'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const h = React.createElement
@@ -254,6 +254,13 @@ function openSessionWith(sessionId: string, prompt?: string) {
 let notice: { text: string; at: number } | null = null
 const noticeSubs = new Set<() => void>()
 const showNotice = (text: string) => { const at = Date.now(); notice = { text, at }; noticeSubs.forEach(f => f()); setTimeout(() => { if (notice?.at === at) { notice = null; noticeSubs.forEach(f => f()) } }, 4000) }
+/** G14 ⑨：收起 / 归档后 5 秒内可撤销（只撤最近一次） */
+let undoBox: { text: string; undo: { action: string; task: string }; sid?: string | undefined; at: number } | null = null
+const undoSubs = new Set<() => void>()
+const showUndo = (text: string, undo: { action: string; task: string }, sid?: string) => { const at = Date.now(); undoBox = { text, undo, sid, at }; undoSubs.forEach(f => f()); setTimeout(() => { if (undoBox?.at === at) { undoBox = null; undoSubs.forEach(f => f()) } }, 5000) }
+const clearUndo = () => { undoBox = null; undoSubs.forEach(f => f()) }
+function useUndo() { return React.useSyncExternalStore(cb => { undoSubs.add(cb); return () => { undoSubs.delete(cb) } }, () => undoBox) }
+const VIEW_ACT_TEXT: Record<string, string> = { hide: '已收起', unhide: '已取消收起', archive: '已归档', restore: '已恢复' }
 function useNotice() { return React.useSyncExternalStore(cb => { noticeSubs.add(cb); return () => { noticeSubs.delete(cb) } }, () => notice) }
 let docsRoot: string | null = null
 /** Markdown 里点了文件链接：先过白名单再打开。 */
@@ -294,7 +301,7 @@ const CSS = `
 .dshm-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 8px;padding:8px 14px 8px 11px;border-left:3px solid transparent;cursor:pointer;width:100%;text-align:left;background:transparent;border-top:0;border-right:0;border-bottom:0;color:inherit;font:inherit}
 .dshm-row:hover{background:var(--dsw-alias-interactive-bg-hover,#8882)}
 .dshm-row.need{border-left-color:var(--dshm-wait)}
-.dshm-rowwrap{display:flex;align-items:stretch}.dshm-rowwrap>.dshm-row{flex:1;min-width:0}.dshm-focus{border:0;background:none;color:var(--dshm-mute);cursor:pointer;padding:0 12px;font-size:16px}.dshm-focus.on{color:var(--dshm-wait)}.dshm-grp-btn{display:block;width:100%;text-align:left;border:0;background:none;cursor:pointer;font:inherit;color:inherit}
+.dshm-rowwrap{display:flex;align-items:stretch;flex-wrap:wrap}.dshm-rowact{border:0;background:none;color:var(--dshm-mute);cursor:pointer;padding:0 6px;font-size:12px;white-space:nowrap}.dshm-rowact:hover{color:inherit}.dshm-rowwrap>.dshm-row{flex:1;min-width:0}.dshm-focus{border:0;background:none;color:var(--dshm-mute);cursor:pointer;padding:0 12px;font-size:16px}.dshm-focus.on{color:var(--dshm-wait)}.dshm-grp-btn{display:block;width:100%;text-align:left;border:0;background:none;cursor:pointer;font:inherit;color:inherit}
 .dshm-sb{padding:6px 14px 8px;border-bottom:1px solid var(--dshm-line);display:flex;flex-direction:column;gap:4px}.dshm-sb [data-live=running]{border-color:var(--dshm-run)}.dshm-sb .cnt-on{border-color:var(--dshm-wait);color:var(--dshm-wait)}.dshm-sb .cnt-bad{border-color:var(--dshm-bad);color:var(--dshm-bad)}
 .dshm-rid{font-weight:700;white-space:nowrap}.dshm-rt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dshm-rm{grid-column:2/4;font-size:11px;color:var(--dshm-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -404,8 +411,13 @@ function Board({ sessionId }: { sessionId?: string }) {
   ensureStyle()
   const n = useNav()
   const [archived, setArchived] = React.useState(false)
+  const [hiddenView, setHiddenView] = React.useState(false) // G14 ⑨「已收起」视图
+  const undo = useUndo()
   const [mine, setMine] = React.useState(false)
-  const st = usePoll(() => getJson(withSession(`/api/dsh-master/state?view=${archived ? 'archived' : 'active'}`, sessionId)), [archived, sessionId])
+  // G14 ⑦：搜索 + 状态 / 负责筛选（只在前端，搜当前视图；切到「已归档」也能搜）
+  const [q, setQ] = React.useState(''); const [fState, setFState] = React.useState(''); const [fOwner, setFOwner] = React.useState('')
+  const viewName = archived ? 'archived' : hiddenView ? 'hidden' : 'active'
+  const st = usePoll(() => getJson(withSession(`/api/dsh-master/state?view=${viewName}`, sessionId)), [viewName, sessionId])
   const notify = useNotify(st.data)
   const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
   const sessions: any[] = st.data?.sessions ?? []
@@ -436,6 +448,8 @@ function Board({ sessionId }: { sessionId?: string }) {
     pauseErr && h('div', { className: 'dshm-err', role: 'alert' }, pauseErr),
     st.data?.archived && h('div', { className: 'dshm-wait', 'data-testid': 'dshm-archived' }, `旧单元已存档（只读）${st.data.archived.at ? ` · ${showTime(st.data.archived.at)}` : ''}：这里的任务只能看，不再投递、不再提醒；新的工作在项目里做。`),
     note && h('div', { className: 'dshm-err', 'data-testid': 'dshm-notice', role: 'status' }, note.text),
+    undo && h('div', { className: 'dshm-wait', 'data-testid': 'dshm-undo', role: 'status' }, `${undo.text} `,
+      h('button', { className: 'dshm-link', 'data-testid': 'dshm-undo-btn', onClick: async () => { const u = undo; clearUndo(); try { await postJson(withSession('/api/dsh-master/action', u.sid ?? sessionId), u.undo) } catch { /* 撤销失败：下一轮刷新看得到真实状态 */ } st.reload() } }, '撤销')),
     // 等你点：只提醒、点了跳到那个会话；这里没有任何「允许」按钮（批准只能在那个会话里点）
     (st.data?.waiting ?? []).length > 0 && h('div', { className: 'dshm-wait', 'data-testid': 'dshm-waiting', role: 'status' },
       ...(st.data.waiting as any[]).map((w: any) => {
@@ -454,15 +468,32 @@ function Board({ sessionId }: { sessionId?: string }) {
         h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-board-tools', role: 'toolbar' },
           !bctx.readonly && h('button', { className: 'dshm-btn go', onClick: () => openSessionWith(master, '新任务：'), title: '打开总管会话并预填「新任务：」，标题由总管起' }, '＋ 新任务'),
           !bctx.readonly && st.data?.project && h('button', { className: 'dshm-btn', 'data-testid': 'dshm-pause', 'aria-pressed': !!st.data?.paused, onClick: togglePause, title: st.data?.paused ? '恢复：重建定时巡检保底，提醒照常' : '暂停：删掉定时巡检保底、成员一轮结束不提醒总管；总管的工具和派活照常' }, st.data?.paused ? '恢复' : '暂停总管'),
-          h('button', { className: 'dshm-btn', 'aria-pressed': n.view === 'list' && !archived, onClick: () => { setArchived(false); setNav({ view: 'list' }) } }, '近 7 天'),
+          h('button', { className: 'dshm-btn', 'aria-pressed': n.view === 'list' && !archived && !hiddenView, onClick: () => { setArchived(false); setHiddenView(false); setNav({ view: 'list' }) } }, '近 7 天'),
           h('button', { className: 'dshm-btn', 'aria-pressed': mine, onClick: () => setMine(x => !x) }, `只看等我（${needCount}）`),
-          h('button', { className: 'dshm-btn', 'aria-pressed': archived, onClick: () => { setArchived(x => !x); setNav({ view: 'list' }) } }, '已归档'),
+          h('button', { className: 'dshm-btn', 'aria-pressed': archived, onClick: () => { setArchived(x => !x); setHiddenView(false); setNav({ view: 'list' }) } }, '已归档'),
+          h('button', { className: 'dshm-btn', 'data-testid': 'dshm-view-hidden', 'aria-pressed': hiddenView, onClick: () => { setHiddenView(x => !x); setArchived(false); setNav({ view: 'list' }) } }, `已收起（${st.data?.hiddenCount ?? 0}）`),
           h('button', { className: 'dshm-btn', 'aria-pressed': n.view === 'sessions', onClick: () => setNav(n.view === 'sessions' ? { view: 'list' } : { view: 'sessions' }) }, `会话（${sessions.length}）`),
           notify.supported && h('button', { className: 'dshm-btn', 'aria-pressed': notify.on, onClick: notify.toggle, title: '有等你定或需要你处理的任务时提醒（60 秒内合并成一条）' }, notify.on ? '通知：开' : '通知：关')),
         st.error && h('div', { className: 'dshm-err' }, st.error),
         h('div', { className: 'dshm-body' }, n.view === 'sessions' ? h(SessionsList, { sessions, now: st.data?.now, unenrolled: st.data?.unenrolled ?? [] })
-          : h(React.Fragment, null, h(TaskList, { data: st.data, mine, archived, onChanged: st.reload }), h(Unenrolled, { list: st.data?.unenrolled ?? [], now: st.data?.now }))))))
+          : h(React.Fragment, null, h(SearchBar, { tasks: st.data?.tasks ?? [], q, setQ, fState, setFState, fOwner, setFOwner }),
+            h(TaskList, { data: st.data && (q || fState || fOwner) ? { ...st.data, tasks: matchTasks(st.data.tasks ?? [], q, { state: fState, owner: fOwner }) } : st.data, mine, archived, view: viewName, onChanged: st.reload }),
+            h(Unenrolled, { list: st.data?.unenrolled ?? [], now: st.data?.now }))))))
 }
+/** G14 ⑦：搜索框 + 状态 / 负责两个下拉（选项按当前列表里实际出现的值）；有条件时显示「显示 n / m 个 · 清除」。 */
+function SearchBar({ tasks, q, setQ, fState, setFState, fOwner, setFOwner }: any) {
+  const opt = filterOptions(tasks)
+  const shown = (q || fState || fOwner) ? matchTasks(tasks, q, { state: fState, owner: fOwner }).length : tasks.length
+  const sel = (testid: string, label: string, v: string, set: (x: string) => void, list: string[]) => h('select', { className: 'dshm-btn', 'data-testid': testid, 'aria-label': label, value: v, onChange: (e: any) => set(e.target.value) },
+    h('option', { value: '' }, `${label}：全部`), ...list.map(x => h('option', { key: x, value: x }, x)))
+  return h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-search', role: 'search' },
+    h('input', { className: 'dshm-btn', 'data-testid': 'dshm-search-q', type: 'search', placeholder: '搜索：编号 / 标题 / 负责 / 回报', value: q, style: { minWidth: 160, flex: '1 1 160px' },
+      onChange: (e: any) => setQ(e.target.value), onKeyDown: (e: any) => { if (e.key === 'Escape') setQ('') } }),
+    sel('dshm-filter-state', '状态', fState, setFState, opt.states), sel('dshm-filter-owner', '负责', fOwner, setFOwner, opt.owners),
+    (q || fState || fOwner) && h('span', { className: 'dshm-meta', 'data-testid': 'dshm-search-count' }, `显示 ${shown} / ${tasks.length} 个 `,
+      h('button', { className: 'dshm-link', onClick: () => { setQ(''); setFState(''); setFOwner('') } }, '清除')))
+}
+
 /**
  * G11-2 总管状态栏。「正在」只有工具名 + 说明（服务端已裁好，见 status-bar.ts）；计数可点：
  * 等你定 ⇒ 只看等我；等你点 ⇒ 打开第一个在等你点的会话；受阻 ⇒ 打开第一件受阻的任务。成员块点了打开那个会话。
@@ -470,14 +501,16 @@ function Board({ sessionId }: { sessionId?: string }) {
 function StatusBar({ sb, now, waiting, tasks, onAsks, onTask }: { sb: any; now?: string; waiting: any[]; tasks: any[]; onAsks: () => void; onTask: (task: string) => void }) {
   const live = (x: string) => (({ running: '忙', idle: '空闲', cold: '未加载' } as any)[x] ?? '—')
   const blocked = tasks.find((t: any) => t.state === '受阻')
-  const count = (key: string, label: string, n: number, onClick?: () => void) => h('button', { key, className: `dshm-btn${n ? (key === 'blocked' ? ' cnt-bad' : ' cnt-on') : ''}`, 'data-count': key, 'data-n': n, disabled: !n || !onClick, onClick }, `${label} ${n}`)
+  const count = (key: string, label: string, n: number, onClick?: () => void, bad = key === 'blocked', title?: string) => h('button', { key, className: `dshm-btn${n ? (bad ? ' cnt-bad' : ' cnt-on') : ''}`, 'data-count': key, 'data-n': n, ...(bad && n ? { 'data-overdue': '1' } : {}), ...(title ? { title } : {}), disabled: !n || !onClick, onClick }, `${label} ${n}`)
   return h('div', { className: 'dshm-sb', 'data-testid': 'dshm-status-bar', role: 'status' },
     h('div', { className: 'dshm-meta', 'data-testid': 'dshm-sb-master', 'data-live': sb.master.live },
       `总管 ${live(sb.master.live)}`,
       sb.master.doing ? ` · ${sb.master.live === 'running' ? '正在' : '上一步'}：${sb.master.doing}${sb.master.doingAt ? `（${showTime(sb.master.doingAt, now)}）` : ''}` : '',
-      h('span', { 'data-testid': 'dshm-sb-next' }, ` · 下次保底 ${sb.nextSchedule ? showTime(sb.nextSchedule, now) : '—'}`)),
+      h('span', { 'data-testid': 'dshm-sb-next' }, ` · 下次保底 ${sb.nextSchedule ? showTime(sb.nextSchedule, now) : '—'}`),
+      sb.nextReminder ? h('span', { 'data-testid': 'dshm-sb-reminder', title: sb.nextReminder.text }, ` · 下次提醒 ${showTime(sb.nextReminder.at, now)}`) : null),
     h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-sb-counts' },
-      count('asks', '等你定', sb.counts.asks, onAsks),
+      // G14 ③c：最早一件挂超过 2 小时 ⇒ 标红，悬停写挂了多久
+      count('asks', '等你定', sb.counts.asks, onAsks, !!sb.counts.asksOverdue, sb.counts.asksOldestMin != null ? `最早一件已挂 ${sb.counts.asksOldestMin >= 120 ? `${Math.floor(sb.counts.asksOldestMin / 60)} 小时` : `${sb.counts.asksOldestMin} 分钟`}${sb.counts.asksOverdue ? '，超过 2 小时' : ''}` : undefined),
       count('waiting', '等你点', sb.counts.waiting, waiting[0] ? () => openSessionWith(waiting[0].session) : undefined),
       count('blocked', '受阻', sb.counts.blocked, blocked ? () => onTask(blocked.id) : undefined)),
     sb.members.length > 0 && h('div', { className: 'dshm-tools wrap', 'data-testid': 'dshm-sb-members' },
@@ -503,7 +536,7 @@ const COLLAPSE_KEY = 'dshm.collapsed.v1'
 const loadCollapsed = (): Record<string, boolean> => { try { return JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}') ?? {} } catch { return {} } }
 const saveCollapsed = (v: Record<string, boolean>) => { try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(v)) } catch { /* 隐私模式等 */ } }
 
-function TaskList({ data, mine, archived, onChanged }: any) {
+function TaskList({ data, mine, archived, onChanged, view }: any) {
   const tasks: any[] = data?.tasks ?? []
   const asks: any[] = data?.asks ?? []
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>(loadCollapsed)
@@ -521,25 +554,45 @@ function TaskList({ data, mine, archived, onChanged }: any) {
     ...groups.flatMap(g => [h('button', { key: `grp-${g.key}`, className: 'dshm-grp dshm-grp-btn', 'data-group': g.key, 'aria-expanded': !isClosed(g), onClick: () => toggle(g) },
       `${isClosed(g) ? '▸' : '▾'} ${g.name} · ${g.list.length}`),
       ...(isClosed(g) ? [] : g.list.flatMap((t: any) => [
-        h(TaskRow, { key: t.id, t, now: data?.now, onChanged }),
+        h(TaskRow, { key: t.id, t, now: data?.now, onChanged, view }),
         ...asks.filter(a => a.task === t.id).map(a => h(AskCard, { key: `ask-${a.id}`, a, onChanged })),
       ]))]),
-    tasks.length === 0 && orphans.length === 0 && h('div', { className: 'dshm-meta', style: { padding: '12px 14px' } }, archived ? '没有已归档的任务' : '这个视图里没有任务'))
+    tasks.length === 0 && orphans.length === 0 && h('div', { className: 'dshm-meta', style: { padding: '12px 14px' } }, view === 'hidden' ? '没有收起的任务' : archived ? '没有已归档的任务' : '这个视图里没有任务'))
 }
 
-function TaskRow({ t, now, onChanged }: any) {
+function TaskRow({ t, now, onChanged, view }: any) {
   const b = useBoard()
   const need = needsYou(t)
   const label = stateLabel(t)
   const [err, setErr] = React.useState<string>()
+  const [editing, setEditing] = React.useState(false); const [aliasDraft, setAliasDraft] = React.useState('') // G14 ⑩
   // G11-3：置顶 / 取消置顶（存项目库，手机电脑一致）
   const focus = async () => { setErr(undefined); try { await postJson(withSession('/api/dsh-master/action', b.sid), { action: 'focus', task: t.id, on: !t.focus }); onChanged?.() } catch (e: any) { setErr(e.message) } }
   return h('div', { className: 'dshm-rowwrap' },
     h('button', { className: `dshm-row${need ? ' need' : ''}`, 'data-task': t.id, onClick: () => setNav({ view: 'task', task: t.id }) },
-      h('span', { className: 'dshm-rid' }, t.id), h('span', { className: 'dshm-rt' }, t.title), h('span', { className: `dshm-chip ${stateTone(t.openAsks ? '等你定' : t.state)}` }, label),
+      h('span', { className: 'dshm-rid' }, t.id), h('span', { className: 'dshm-rt', 'data-alias': t.alias ?? '' }, t.alias ? h(React.Fragment, null, t.alias, h('span', { className: 'dshm-meta', title: '原标题' }, ` · ${t.title}`)) : t.title), h('span', { className: `dshm-chip ${stateTone(t.openAsks ? '等你定' : t.state)}` }, label),
       h('span', { className: 'dshm-rm' }, `${t.gate ? `${t.gate} · ` : ''}${t.owner} · ${showTime(t.updated, now)}${t.openAsks ? ` · 等你定 ${t.openAsks}` : ''}`)),
     !b.readonly && h('button', { className: `dshm-focus${t.focus ? ' on' : ''}`, 'data-focus-task': t.id, 'aria-pressed': !!t.focus, onClick: focus, title: t.focus ? '取消置顶' : '置顶到 ★ Focus 区' }, t.focus ? '★' : '☆'),
+    // G14 ⑨：收起 / 归档 / 恢复（归档只对已结束的；已归档视图里显示「恢复」）
+    !b.readonly && (view === 'archived' ? h('button', { className: 'dshm-rowact', 'data-view-act': 'restore', 'data-view-task': t.id, onClick: () => viewAct('restore'), title: '回到列表' }, '恢复')
+      : h(React.Fragment, null,
+        h('button', { className: 'dshm-rowact', 'data-view-act': t.hidden ? 'unhide' : 'hide', 'data-view-task': t.id, onClick: () => viewAct(t.hidden ? 'unhide' : 'hide'), title: t.hidden ? '回到列表' : '只是列表里不显示，任务照常；有新回报或新的等你定会自动回来' }, t.hidden ? '取消收起' : '收起'),
+        t.closed && !t.openAsks && h('button', { className: 'dshm-rowact', 'data-view-act': 'archive', 'data-view-task': t.id, onClick: () => viewAct('archive'), title: '马上进「已归档」，不等 7 天' }, '归档'))),
+    // G14 ⑩：给任务起自己好记的叫法（总管和成员也会认）
+    !b.readonly && h('button', { className: 'dshm-rowact', 'data-alias-edit': t.id, onClick: () => { setAliasDraft(t.alias ?? ''); setEditing(x => !x) }, title: '起一个你好记的叫法；总管和成员也会认' }, '叫法'),
+    editing && h('div', { className: 'dshm-tools wrap', 'data-alias-form': t.id, style: { flexBasis: '100%' } },
+      h('input', { className: 'dshm-btn', 'data-alias-input': t.id, value: aliasDraft, placeholder: '4–20 个字，空 = 恢复原标题', onChange: (e: any) => setAliasDraft(e.target.value), style: { minWidth: 180 } }),
+      h('button', { className: 'dshm-btn go', 'data-alias-save': t.id, onClick: saveAlias }, '保存'),
+      h('button', { className: 'dshm-btn', onClick: () => setEditing(false) }, '取消')),
     err && h('div', { className: 'dshm-err' }, err))
+  async function saveAlias() {
+    setErr(undefined)
+    try { const r = await postJson(withSession('/api/dsh-master/action', b.sid), { action: 'alias', task: t.id, alias: aliasDraft }); setEditing(false); if (r?.undo) showUndo(r.alias ? `${t.id} 叫作「${r.alias}」` : `${t.id} 恢复原标题`, r.undo, b.sid); onChanged?.() } catch (e: any) { setErr(e.message) }
+  }
+  async function viewAct(action: string) {
+    setErr(undefined)
+    try { const r = await postJson(withSession('/api/dsh-master/action', b.sid), { action, task: t.id }); if (r?.undo) showUndo(`${VIEW_ACT_TEXT[action]} ${t.id}`, r.undo, b.sid); onChanged?.() } catch (e: any) { setErr(e.message) }
+  }
 }
 
 function AskCard({ a, onChanged }: any) {
@@ -623,6 +676,9 @@ function TaskView({ task, sessions, now, onChanged }: any) {
           return h('button', { key: gate, className: `dshm-gate ${g.state} dshm-ref`, 'data-ref': `${t.id}/${gate}`, title: refTitle(ref, b), onClick: (e: any) => setCard({ ref, ...at(e), at: Date.now() }) }, `${gate} ${def.title}`)
         })),
         t.claims && h('div', { className: 'dshm-meta', 'data-testid': 'dshm-claims', style: { marginTop: 6 } }, `认领${t.claims.active ? '' : '（已失效）'}：`, ...t.claims.paths.map((p: string) => h('code', { key: p, style: { marginRight: 6 } }, p)), t.claims.reason ? ` · 重叠理由：${t.claims.reason}` : ''),
+        // G14 审稿 SHOULD 7 ⑤：这件任务挂着的到点提醒（总管用 master_remind 挂的）
+        (t.reminders ?? []).length > 0 && h('div', { className: 'dshm-meta', 'data-testid': 'dshm-reminders', style: { marginTop: 6 } }, '到点提醒：',
+          ...(t.reminders as any[]).map((r: any) => h('span', { key: r.id, 'data-reminder': r.id, style: { marginLeft: 6 } }, `${showTime(r.at)} ${r.text}`))),
         h('div', { className: 'dshm-prod', 'data-testid': 'dshm-products' },
           h('span', { className: 'dshm-meta' }, '产物'),
           products.length ? products.map(p => /\.[A-Za-z0-9]{1,8}$/.test(p)
@@ -792,8 +848,8 @@ function MainRedirect() {
   if (v && !projects.length && !legacyOn) return h('div', { className: 'dshm', 'data-testid': 'dshm-no-project', style: { padding: 24, height: 'auto' } },
     h('h2', { style: { fontSize: 16, margin: '0 0 8px' } }, '总管看板 · 还没有项目'),
     h('div', { className: 'dshm-meta', style: { lineHeight: 1.7 } },
-      '点「新会话」，选好项目所在的文件夹，在 Agent 预设里选「dsh-master 总管」，发第一句话——这个文件夹就开张成一个项目，这个会话就是它的总管。',
-      h('br'), 'Start a new session in your project folder with the “dsh-master 总管” agent preset; that folder becomes a project and the session becomes its master.'))
+      '点「新会话」，选好项目所在的文件夹，在 Agent 预设里选「dsh-master 总管」——选好就开张，不用先发消息：这个文件夹成了一个项目，这个会话就是它的总管（总管会自己先跑一轮，读开张通知）。',
+      h('br'), 'Start a new session in your project folder with the “dsh-master 总管” agent preset; as soon as the preset is selected, that folder becomes a project and the session becomes its master (no first message needed).'))
   if (!v || !projects.length) return h('div', { style: { padding: 24, opacity: .7 } }, '总管看板在右侧栏：正在打开总管会话……')
   return h('div', { className: 'dshm', 'data-testid': 'dshm-project-picker', style: { padding: 24, height: 'auto' } },
     h('h2', { style: { fontSize: 16, margin: '0 0 8px' } }, '总管看板 · 选一个项目'),

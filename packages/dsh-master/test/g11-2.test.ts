@@ -82,7 +82,7 @@ describe('G11-2 ③ PanelService.statusBar', () => {
     const sb = panel.statusBar({ doing: { label: 'bash · 跑单测', atMs: Date.parse('2026-11-07T14:03:00Z') }, waitingCount: 2, nextSchedule: '2026-11-07T14:40:00.000Z' })
     expect(sb.master).toMatchObject({ id: MASTER_ID, live: 'running', doing: 'bash · 跑单测', doingAt: '2026-11-07 2203' })
     expect(sb.nextSchedule).toBe('2026-11-07 2240')
-    expect(sb.counts).toEqual({ asks: 1, waiting: 2, blocked: 1 })
+    expect(sb.counts).toMatchObject({ asks: 1, waiting: 2, blocked: 1, asksOverdue: 0 }) // G14 ③c 加了 asksOverdue / asksOldestMin
     expect(sb.members.map(m => m.id)).toEqual(['exec-a', 'exec-b'])
     expect(sb.members[0]).toMatchObject({ live: 'running', tasks: [{ id: 'T100', state: '进行中', gate: 'G2' }] })
     expect(sb.members[1]!.tasks.map(t => `${t.id}[${t.state}]`)).toEqual(['L1107-1[进行中]', 'L1107-2[受阻]'])

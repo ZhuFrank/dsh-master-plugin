@@ -44,10 +44,14 @@ dsh-master 把这些记账的活交给插件：
 | **直接找成员**（0.2.0） | 你可以在成员自己的会话里直接跟它说话，不叫醒总管：你开的那一轮不触发「没回报」提醒；在看板上回答「等你定」卡片，答案直接交给负责的成员，总管只收一条记录；成员改了结论、或者遇到要总管拍板的事，巡检会告诉总管。写 `directToMember: false` 回到旧行为。 |
 | **总管状态栏**（0.2.0） | 看板顶上显示总管正在做什么（工具名加模型写的一句说明，不显示命令全文）、下次定时保底的时间，以及三个可点的计数：等你定、等你点、受阻。在岗的成员和它们手上没结的任务也列在这里。 |
 | **Focus 区与按日期分组**（0.2.0） | 给任务点 ☆ 就置顶到「★ Focus」组。默认列表按日期分组显示最近 5 天，更早的折叠起来，每组都能收起 / 展开。 |
+| **重活排队更聪明**（0.2.1） | 排在最前面的活要的可用内存不够时，后面要得少的先跑。`heavy_cancel` 取消排队中的活，`heavy_status` 看队列和插件读到的可用内存。门槛高于整机内存的直接拒，高于当前可用的当场提示；排了 15 分钟还够不着，巡检告诉总管。 |
+| **跟进提醒**（0.2.1） | `master_remind`（「2026-11-28 10:00」「3h」「2d」）把提醒存进项目库，到点叫醒总管、带上原话；DSH 没开时错过的，下次补发并写明晚了多久。状态栏显示下一个提醒。 |
+| **看板：搜索、收起、归档、你自己的叫法**（0.2.1） | 按编号、标题、负责人、最后一句回报搜任务，按状态和负责人筛。任何任务都能收起，已结束的能马上归档（5 秒内可撤销）。给任务起个你好记的叫法，总管和成员会收到说明，之后插件发的消息里编号后面都带着这个叫法。 |
+| **总管更安静、更靠谱**（0.2.1） | 巡检发现只是有项消失时不再叫醒总管。已结案任务上的「等你定」答了，交给总管并叫醒它；结案后的迟到回报巡检会报。「等你定」挂超过 2 小时状态栏标红。压缩以后，总管 / 成员直接收到在途任务、没答的问题和手册「标准做法」原文。成员回报正文太长时只给总管看前一段（全文照存）。在对话里答过的「等你定」，总管用 `master_ask_close` 结案。 |
 
 ## 环境要求
 
-- DeepSeek Harness 的 **`dsh web`**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5` 和 `0.2.2-rc.1` 上测过。
+- DeepSeek Harness 的 **`dsh web`**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5`、`0.2.2-rc.1` 和 `0.2.2-rc.4` 上测过。0.2.2 上已知：在宿主的提问卡片上答完以后，看板「等你点」的提醒有时会晚一点才消失（插件只负责提醒，答案由 DSH 自己处理）；0.2.0 也一样，在查。
 - Node.js **>= 22.19**（用到内置的 `node:sqlite`）。DSH 0.2.2 本身要 Node >= 24.9。
 - DSH 0.2.2 上，宿主「写之前先读」的文件防护（`dsh-base` 组合包里的 `fs-observation-policy`）**默认关**。关着的时候，两个成员同时改同一个文件，宿主不会拦下后写的，插件的「乐观锁冲突提示」也就不起作用；插件自己的「认领」（成员写进别的任务认领的范围会被拦下）不受影响。要这道防护，把 profile 里那一行改成 `disabled: false`。它对 profile 里的所有会话生效，所以插件不替你改。
 - 目前只在 macOS 上测过。
@@ -61,7 +65,7 @@ dsh-master 把这些记账的活交给插件：
 **A. 装进日常 profile（`web`）。** 先停掉 `dsh web`，然后运行：
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
 ```
 
 再启动 `dsh web`，刷新网页。
@@ -71,7 +75,7 @@ dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/relea
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # 第一次：建 profile
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.0/dsh-master-0.2.0.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
 dsh --profile master --port 3090                                            # 打开 http://127.0.0.1:3090
 ```
 
@@ -87,7 +91,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 
 ## 快速上手
 
-1. **开张**：点「新会话」，选项目所在的文件夹，Agent 预设选「dsh-master 总管」，发第一句话。这个文件夹就开张成了项目，这个会话就是它的总管。
+1. **开张**：点「新会话」，选项目所在的文件夹，Agent 预设选「dsh-master 总管」。选好就开张，不用先发消息：这个文件夹成了项目，这个会话就是它的总管（总管会自己先跑一轮，读开张通知）。
 2. **派活**：直接跟总管说要做什么。它会判断轻重；重任务先写任务书，再建成员（`master_spawn`）、派活。
 3. **看进度**：打开「总管看板」，左侧栏和会话标题栏上都有入口。「等你处理」里的卡片要你来动手：回答问题，或者去那个会话里点批准。
 4. **过闸门**：成员到了闸门，总管核对产物、记下验收。往下做不做，由你决定。

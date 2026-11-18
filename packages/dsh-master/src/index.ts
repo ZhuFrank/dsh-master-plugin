@@ -60,7 +60,9 @@ export interface Config {
   sessionModel?: { provider: string; model: string }
   rate?: { perMinute?: number; maxBytes?: number; maxAttempts?: number; backoffMs?: number }
   /** 巡检间隔（默认 10 分钟）、停滞阈值（默认 2 小时）、单轮过长阈值（默认 1 小时）。 */
-  patrol?: { intervalMs?: number; stallMs?: number; longRunMs?: number; firstBackupMs?: number; waitMs?: number; rescanMs?: number }
+  patrol?: { intervalMs?: number; stallMs?: number; longRunMs?: number; firstBackupMs?: number; waitMs?: number; rescanMs?: number; heavyStuckMs?: number }
+  /** G14 ⑤：重活排第一的够不着时先跑后面够得着的（默认开） */
+  heavySkipAhead?: boolean
   /** ctx.schedule 绑总管的保底巡检间隔（秒，默认 6 小时；0 关闭）。 */
   scheduleEverySeconds?: number
   /** 自动推送回忆：按文件（写前提醒）、按话题（每步开始前）。默认都开。 */
@@ -164,9 +166,10 @@ export function apply(ctx: any, config: Config = {}): void {
   const heavy = new HeavyQueue(legacyStore, systemClock, {
     logDir: path.join(stateDir, 'heavy'),
     ...(config.fakeFreeGb !== undefined ? { freeGb: () => config.fakeFreeGb! } : {}),
+    ...(config.heavySkipAhead === false ? { skipAhead: false } : {}),
     guard: (command, cwd) => guardDecision({ name: 'bash', args: { command }, cwd }, { protectedPaths: protectedPaths(), env }),
     onDone: job => {
-      try { (unitOf(job.session) ?? units.get(LEGACY)!).core.systemNotify({ key: `heavy:${job.id}:${job.state}`, to: job.session, label: '重活结束', text: `heavy_run #${job.id}「${job.label}」${job.state === 'done' ? '跑完了' : '失败了'}（exit=${job.exit_code ?? '中断'}）。日志：${job.log}` }) }
+      try { (unitOf(job.session) ?? units.get(LEGACY)!).core.systemNotify({ key: `heavy:${job.id}:${job.state}`, to: job.session, label: '重活结束', text: job.state === 'cancelled' ? `heavy_run #${job.id}「${job.label}」已取消（${(job as any).cancelled_by ?? '未知'} 取消的），没有跑。` : `heavy_run #${job.id}「${job.label}」${job.state === 'done' ? '跑完了' : '失败了'}（exit=${job.exit_code ?? '中断'}）。日志：${job.log}` }) }
       catch (e) { warn('heavy notify: %s', String(e)) }
     },
   })
@@ -178,14 +181,16 @@ export function apply(ctx: any, config: Config = {}): void {
     const u = { key, project, store, mem, delivery, backupDir, pushed: new Map<string, Set<string>>(), filePush: new FilePushGate(file => mem.relatedForFiles([file])) } as Unit
     u.core = new Core(store, delivery, ports, systemClock, { idleGraceMs: config.idleGraceMs ?? 120_000, mem, heavy, directToMember: config.directToMember !== false,
       ...(project ? { masterId: project.master, memberPrefix: memberPrefixOf(project), projectRoot: project.root, memberPreset: config.projectMemberPreset ?? 'workspace-write', masterPreset: masterPresetOf(config) } : {}),
-      patrol: async () => ({ findings: u.patrol.findings() }), tag: (caller, a) => u.attrib.tag(caller, a),
+      // G14 ⑧：master_patrol 还返回最近 7 天哪类发现叫醒最多、白叫的占多少
+      patrol: async () => ({ findings: u.patrol.findings(), wakeStats: u.core.wakeStats() }), tag: (caller, a) => u.attrib.tag(caller, a),
       doctor: () => ({ problems: doctor(store, mem, { now: systemClock(), backupDir }) }),
       // G8：只有项目单元能暂停（旧单元没有这个工具）
       ...(project ? { pause: (caller: string, reason: string) => pauseUnit(u, caller, reason) } : {}) })
     u.attrib = new Attribution(store, u.core, systemClock)
     // 等你点：旧单元报不在任何项目里的会话（和以前一样），项目单元只报自己的
     const mine = () => waiting.list().filter(w => { const o = unitOf(w.session); return project ? o === u : (!o || o === u) })
-    u.patrol = new Patrol(store, u.core, mem, systemClock, { stallMs: pc.stallMs ?? 2 * 3600_000, longRunMs: pc.longRunMs ?? 3600_000, backupDir, waiting: mine, waitMs: pc.waitMs })
+    u.patrol = new Patrol(store, u.core, mem, systemClock, { stallMs: pc.stallMs ?? 2 * 3600_000, longRunMs: pc.longRunMs ?? 3600_000, backupDir, waiting: mine, waitMs: pc.waitMs,
+      heavy: () => ({ jobs: heavy.jobs(), free: heavy.memory().free_gb }), heavyStuckMs: pc.heavyStuckMs })
     u.panel = new PanelService(store, u.core, u.attrib, ports, systemClock)
     store.addEvent({ at: bjtIso(systemClock()), type: 'plugin/start', data: { pid: process.pid, stateDir, unit: key, pending: store.deliveriesByState('pending').length } })
     ctx.effect(() => () => { try { u.core.dispose() } catch {} ; try { mem.close() } catch {} ; try { store.close() } catch {} })
@@ -232,7 +237,7 @@ export function apply(ctx: any, config: Config = {}): void {
     try {
       disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-master-role', order: 9000, interpolate: false, text: () => {
         const row = u.store.getSession(agent.id)
-        return [rolePrompt(role, agent.id, u.mem.docs.abs(u.core.handbookFile(agent.id, row?.handbook)), u.core.masterId, u.project ? { root: u.project.root, worktree: u.store.getMeta(`worktree:${agent.id}`), paused: role === 'master' ? pausedView(u) : undefined } : undefined), u.mem.residentSummary()].filter(Boolean).join('\n\n')
+        return [rolePrompt(role, agent.id, u.mem.docs.abs(u.core.handbookFile(agent.id, row?.handbook)), u.core.masterId, u.project ? { root: u.project.root, worktree: u.store.getMeta(`worktree:${agent.id}`), paused: role === 'master' ? pausedView(u) : undefined } : undefined), u.mem.residentSummary(), u.core.aliasTable()].filter(Boolean).join('\n\n') // G14 审稿 SHOULD 7 ⑩：叫法对照表
       } }))
     } catch (e) { warn('systemPrompt.section 失败：%s', String(e)) }
     if (role === 'exec') {
@@ -311,7 +316,7 @@ export function apply(ctx: any, config: Config = {}): void {
     return { opened: p.id, root, master: id }
   }
   if (config.projects !== false) ctx.on('session/created', (session: any) => { void onSessionCreated(session).catch(e => warn('开张失败：%s', String(e?.stack ?? e))) })
-  // G6-5：界面上的开张流程是「新建会话（头里是默认预设 standard）→ 在模式菜单里选『dsh-master 总管』→ 发第一句话」。
+  // G6-5：界面上的开张流程是「新建会话（头里是默认预设 standard）→ 在模式菜单里选『dsh-master 总管』」，选好就开张、不等第一句话（03 期 R1_live 实录：选预设后约 1.7 秒看板就出现）。
   // 预设是随后单独记的一条 agent-preset/selected，不在 session/created 的头里；宿主的预设登记表会把它再广播成
   // agent-preset/selected(会话 ID, 预设)（session/event 里收不到这一条，沙盒实测）⇒ 按选中的预设再走一遍开张判断，工作目录按 ID 向宿主要
   if (config.projects !== false) ctx.on('agent-preset/selected', (sessionId: string, preset: string) => {
@@ -356,6 +361,7 @@ export function apply(ctx: any, config: Config = {}): void {
     const role = callerId && u ? u.core.roleOf(callerId) : undefined
     // G11-2 状态栏「正在：」只记总管的、只记工具名 + description（status-bar.ts），命令全文不记
     if (role === 'master' && callerId) masterNow.record(callerId, exec?.name, exec?.arguments, systemClock())
+    if (role === 'master' && callerId) { try { unitOf(callerId)?.core.noteToolCall(callerId, exec?.name) } catch { /* 统计失败不影响工具 */ } } // G14 ⑧
     const cwd = exec?.agent ? cwdOf(exec.agent) : undefined
     const call = { name: exec?.name, args: exec?.arguments, role, cwd }
     // G6-4：项目成员（工作目录是项目根，不是临时 worktree）不许动 git 暂存区 / 提交 / 分支
@@ -432,7 +438,7 @@ export function apply(ctx: any, config: Config = {}): void {
 - 你现在${role === 'master' ? '不是总管' : '不是任何总管的成员'}，没有 master_* 工具，插件也不再给你投递、提醒、定时巡检。这不是故障，重启实例也不会恢复，不要建议重启，也不要去翻插件源码或想办法绕过守卫。
 - 现在的项目和总管：
 ${list}
-- 请把这件事直接告诉用户：要派活，到对应项目的总管会话里说；某个目录还没有总管，就在那个工作区新建会话、在模式菜单里选「dsh-master 总管」，发第一句话就开张。这个旧会话留着可以翻历史。`
+- 请把这件事直接告诉用户：要派活，到对应项目的总管会话里说；某个目录还没有总管，就在那个工作区新建会话、在模式菜单里选「dsh-master 总管」，选好就开张（不用先发消息）。这个旧会话留着可以翻历史。`
     const msg = deepFreeze(structuredClone({ id: `${SOURCE_KIND}:archived-notice:${id}`, role: 'user', content: [{ type: 'text', text }],
       source: { kind: SOURCE_KIND, form: 'notice', summary: '旧单元已存档' } }))
     return { ...decision, messages: [...msgs, msg] }
@@ -460,7 +466,7 @@ ${list}
           u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'patrol/schedule-quiet', data: { messages: msgs.length } })
           return { kind: 'reject' }
         }
-        if (unseen.count) u.patrol.markScheduleSeen(unseen.sig)
+        if (unseen.count) { u.patrol.markScheduleSeen(unseen.sig, unseen.keys); u.core.noteWake('schedule', unseen.keys) } // G14 ⑧
       }
       // G4c：@任务 / @执行会话 / 插件转来的消息 → 归属 + 附上库里的状态
       try {
@@ -485,6 +491,8 @@ ${list}
   const timer = setInterval(() => {
     for (const u of liveUnits()) void u.delivery.pump().catch(e => warn('pump %s: %s', u.key, String(e)))
     try { heavy.tick() } catch (e) { warn('heavy: %s', String(e)) }
+    // G14 ⑤：到点提醒（暂停中不发，恢复后补投并写明晚了多久）
+    for (const u of liveUnits()) { try { if (!pausedInfo(u.store)) u.core.fireReminders() } catch (e) { warn('reminders %s: %s', u.key, String(e)) } }
   }, config.pumpIntervalMs ?? 2000)
   ctx.effect(() => () => clearInterval(timer))
   const patrolTimer = setInterval(() => { for (const u of liveUnits()) { try { if (pausedInfo(u.store)) u.patrol.backup(); else u.patrol.tick() } catch (e) { warn('patrol %s: %s', u.key, String(e)) } } }, pc.intervalMs ?? 600_000) // G8：暂停中只备份，不给总管发巡检消息

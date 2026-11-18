@@ -131,7 +131,7 @@ describe('G7 ⑧ 定时保底只为新发现叫醒模型', () => {
     p.markScheduleSeen(a.sig)
     expect(p.unseenForSchedule().count).toBe(0)
     await tool(s.core, MASTER_ID, 'master_ask_user')({ task: 'L1107-8', question: '第二件？', options: ['是', '否'] })
-    const b = p.unseenForSchedule() // 两件等你定合成一项发现（asks:…），但签名变了
+    const b = p.unseenForSchedule() // G14 起一件等你定一条 key（ask:<id>）：新的一件 = 新增 1 项
     expect(b.count).toBe(1)
     expect(b.sig).not.toBe(a.sig)
     expect(p.tick()).toBe('reported') // 巡检消息报过 ⇒ 保底也不再为它叫醒
