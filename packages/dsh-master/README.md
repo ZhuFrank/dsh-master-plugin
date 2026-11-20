@@ -6,7 +6,7 @@
 
 ![The dsh-master board: what needs you, a question with clickable answers, finished work (demo project, mock model)](https://raw.githubusercontent.com/ZhuFrank/dsh-master-plugin/main/docs/images/board.png)
 
-> Status: early (0.2.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`; the full test suite also passes on DSH `0.2.2-rc.1` (Node 24). On DSH 0.2.2 the host's "read before write" file guard is off by default (see [Requirements](#requirements)). The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
+> Status: early (0.2.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`; the full test suite also passes on DSH `0.2.2-rc.1` (Node 24). From 0.2.2 it also works in the official DeepSeek Harness desktop app (tested on desktop `0.2.2-rc.5`). On DSH 0.2.2 the host's "read before write" file guard is off by default (see [Requirements](#requirements)). The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
 
 ## Why
 
@@ -37,14 +37,16 @@ A single DSH session works well for a single task. Once you have several streams
 | **Heavy-job queue, smarter** *(0.2.1)* | If the job at the head of the queue needs more free memory than there is, smaller jobs behind it run first. `heavy_cancel` cancels a queued job and `heavy_status` shows the queue and the free memory the plugin sees. A threshold above the machine's total memory is refused, one above current free memory gets a warning, and patrol tells the master about a job stuck for 15 minutes. |
 | **Follow-up reminders** *(0.2.1)* | `master_remind` ("2026-11-28 10:00", "3h", "2d") stores a reminder in the project database; when it is due the master is woken with the text. Reminders missed while DSH was off are delivered late, saying how late. The status bar shows the next one. |
 | **Board: search, hide, archive, your own names** *(0.2.1)* | Search tasks by ID, title, owner or last report and filter by state or owner. Hide any task, or archive a finished one right away (both undoable for 5 s). Give a task a name you remember; the master and members are told and see it next to the ID in every plugin message. |
+| **Works in the official desktop app** *(0.2.2)* | In 0.2.1 the board loaded in the official desktop app, but every button (answering a "needs you" card, pause, hide, archive …) failed with "origin 不是本服务": the desktop app strips the `Origin` header when it forwards requests, and the plugin refused all such requests. From 0.2.2 a request without `Origin` is accepted when it carries the board's own request header and a JSON body; a request with an `Origin` must still be same-origin. Also, from 0.2.2 on, disabling and re-enabling the plugin on the Plugins page, or uninstalling and installing a new version, no longer needs a host restart: open master and member sessions keep working (0.2.1 failed every turn with `database is not open` until a restart, so the upgrade from 0.2.1 itself still needs one restart). |
 | **Quieter, more reliable master** *(0.2.1)* | Patrol no longer wakes the master when findings only disappear. Answering a "needs you" card on a closed task goes to the master and wakes it. Late reports on closed tasks are surfaced by patrol. A "needs you" open for more than 2 hours turns red. After a compaction the master or member gets its open tasks, open questions and its handbook's "standard practice" inline. Long report bodies are trimmed for the master (full text kept). `master_ask_close` closes a question you answered in the conversation. |
 
 ## Requirements
 
-- DeepSeek Harness **`dsh web`**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5`, `0.2.2-rc.1` and `0.2.2-rc.4`. Known on 0.2.2: after you answer a question card in the host, the board's "waiting for your click" banner sometimes stays a little longer than it should (the plugin only shows the reminder; the answer itself is handled by DSH). 0.2.0 behaves the same; it is being looked into.
+- DeepSeek Harness **`dsh web`** or the **official desktop app**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5`, `0.2.2-rc.1` and `0.2.2-rc.4`, and in the desktop app on `0.2.2-rc.5`. Known on 0.2.2: after you answer a question card in the host, the board's "waiting for your click" banner sometimes stays a little longer than it should (the plugin only shows the reminder; the answer itself is handled by DSH). 0.2.0 behaves the same; it is being looked into.
 - Node.js **>= 22.19** (the plugin uses the built-in `node:sqlite`). DSH 0.2.2 itself needs Node >= 24.9.
 - On DSH 0.2.2, the host's "read before write" guard (`fs-observation-policy` in the `dsh-base` bundle) is **off by default**. While it is off, two members editing the same file are not stopped by the host, so the plugin's "optimistic lock" conflict notice does not fire. Task claims (a member writing into another task's claimed paths is blocked) are the plugin's own and still work. To turn the guard on, set that entry to `disabled: false` in your profile; this applies to every session in the profile, so the plugin does not change it for you.
 - macOS is the only platform tested so far.
+- If you put your own reverse proxy in front of DSH, do not let it strip the browser's `Origin` header or answer preflight requests with CORS headers on DSH's behalf; either would defeat the board's cross-site check.
 
 ## Install
 
@@ -55,17 +57,19 @@ A single DSH session works well for a single task. Once you have several streams
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
 ```
 
-Start `dsh web` again and reload the page.
+Start `dsh web` again and reload the page. You can also install from npm: `dsh plugin --profile web add dsh-master`.
+
+**Official desktop app.** Open **Plugins → Add plugin**, enter `dsh-master` (the npm package) or the Release URL above, click **Install**, then **Enable now**; no restart needed. To upgrade, the desktop app asks you to uninstall the old version first (open the plugin's details, **Uninstall**), then install the new one as above. The plugin's data (tasks, devlog, board settings) lives in `DSH_HOME/dsh-master` (by default `~/.dsh/dsh-master`) and is kept on uninstall. **When upgrading from 0.2.1, restart the desktop app once after installing** (what 0.2.1 leaves behind on uninstall makes an open master session fail every turn with `database is not open`); later upgrades from 0.2.2 need no restart.
 
 **B. A separate instance** (own `DSH_HOME`, own port):
 
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # create the profile once
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
 dsh --profile master --port 3090                                            # then open http://127.0.0.1:3090
 ```
 

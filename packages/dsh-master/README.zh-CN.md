@@ -11,7 +11,7 @@
 
 ![总管看板：等你处理、可点选的提问、已结束的任务（演示项目，假模型）](https://raw.githubusercontent.com/ZhuFrank/dsh-master-plugin/main/docs/images/board.png)
 
-> 现状：早期版本（0.2.x）。在 macOS + DSH `0.2.1-rc.5` 上开发、日常使用；全套测试在 DSH `0.2.2-rc.1`（Node 24）上也通过。DSH 0.2.2 默认关掉了宿主「写之前先读」的文件防护，见[环境要求](#环境要求)。界面、角色守则和工具说明都是中文，时间统一显示北京时间（UTC+8）。
+> 现状：早期版本（0.2.x）。在 macOS + DSH `0.2.1-rc.5` 上开发、日常使用；全套测试在 DSH `0.2.2-rc.1`（Node 24）上也通过。0.2.2 起也能在 DeepSeek Harness 官方桌面端里用（在桌面端 `0.2.2-rc.5` 上测过）。DSH 0.2.2 默认关掉了宿主「写之前先读」的文件防护，见[环境要求](#环境要求)。界面、角色守则和工具说明都是中文，时间统一显示北京时间（UTC+8）。
 
 ## 为什么做它
 
@@ -47,14 +47,16 @@ dsh-master 把这些记账的活交给插件：
 | **重活排队更聪明**（0.2.1） | 排在最前面的活要的可用内存不够时，后面要得少的先跑。`heavy_cancel` 取消排队中的活，`heavy_status` 看队列和插件读到的可用内存。门槛高于整机内存的直接拒，高于当前可用的当场提示；排了 15 分钟还够不着，巡检告诉总管。 |
 | **跟进提醒**（0.2.1） | `master_remind`（「2026-11-28 10:00」「3h」「2d」）把提醒存进项目库，到点叫醒总管、带上原话；DSH 没开时错过的，下次补发并写明晚了多久。状态栏显示下一个提醒。 |
 | **看板：搜索、收起、归档、你自己的叫法**（0.2.1） | 按编号、标题、负责人、最后一句回报搜任务，按状态和负责人筛。任何任务都能收起，已结束的能马上归档（5 秒内可撤销）。给任务起个你好记的叫法，总管和成员会收到说明，之后插件发的消息里编号后面都带着这个叫法。 |
+| **官方桌面端能用了**（0.2.2） | 0.2.1 在官方桌面端里，看板能看，但点任何按钮（答「等你定」、暂停、收起、归档……）都报「origin 不是本服务」：桌面端转发请求时会去掉来源标记，插件把这种请求全拒了。0.2.2 起，没带来源标记的请求只要带着看板自己加的请求头、是 JSON，就放行；带了来源标记的仍然必须同源。另外，从 0.2.2 起，在插件页停用再启用、或者卸载后装新版，不用重启宿主，开着的总管 / 成员会话照常跑（0.2.1 会每一轮报 `database is not open`，要重启才好；所以从 0.2.1 升上来的这一次，装好后还要重启一次）。 |
 | **总管更安静、更靠谱**（0.2.1） | 巡检发现只是有项消失时不再叫醒总管。已结案任务上的「等你定」答了，交给总管并叫醒它；结案后的迟到回报巡检会报。「等你定」挂超过 2 小时状态栏标红。压缩以后，总管 / 成员直接收到在途任务、没答的问题和手册「标准做法」原文。成员回报正文太长时只给总管看前一段（全文照存）。在对话里答过的「等你定」，总管用 `master_ask_close` 结案。 |
 
 ## 环境要求
 
-- DeepSeek Harness 的 **`dsh web`**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5`、`0.2.2-rc.1` 和 `0.2.2-rc.4` 上测过。0.2.2 上已知：在宿主的提问卡片上答完以后，看板「等你点」的提醒有时会晚一点才消失（插件只负责提醒，答案由 DSH 自己处理）；0.2.0 也一样，在查。
+- DeepSeek Harness 的 **`dsh web`** 或**官方桌面端**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5`、`0.2.2-rc.1`、`0.2.2-rc.4` 上测过，桌面端在 `0.2.2-rc.5` 上测过。0.2.2 上已知：在宿主的提问卡片上答完以后，看板「等你点」的提醒有时会晚一点才消失（插件只负责提醒，答案由 DSH 自己处理）；0.2.0 也一样，在查。
 - Node.js **>= 22.19**（用到内置的 `node:sqlite`）。DSH 0.2.2 本身要 Node >= 24.9。
 - DSH 0.2.2 上，宿主「写之前先读」的文件防护（`dsh-base` 组合包里的 `fs-observation-policy`）**默认关**。关着的时候，两个成员同时改同一个文件，宿主不会拦下后写的，插件的「乐观锁冲突提示」也就不起作用；插件自己的「认领」（成员写进别的任务认领的范围会被拦下）不受影响。要这道防护，把 profile 里那一行改成 `disabled: false`。它对 profile 里的所有会话生效，所以插件不替你改。
 - 目前只在 macOS 上测过。
+- 如果你在 DSH 前面自己架了反向代理：别让它删掉浏览器请求的 `Origin` 头，也别让它替 DSH 应答预检、回 CORS 头，否则看板写操作的防跨站检查会失效。
 
 ## 安装
 
@@ -65,17 +67,19 @@ dsh-master 把这些记账的活交给插件：
 **A. 装进日常 profile（`web`）。** 先停掉 `dsh web`，然后运行：
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
 ```
 
-再启动 `dsh web`，刷新网页。
+再启动 `dsh web`，刷新网页。也可以从 npm 装：`dsh plugin --profile web add dsh-master`。
+
+**官方桌面端。** 打开「插件」→「添加插件」，填 `dsh-master`（npm 上的包）或上面的 Release 地址，点「安装」→「立即启用」，不用重启。升级：桌面端要求先卸载旧版（点开插件详情，「卸载」），再照上面装新版。插件数据（任务、devlog、看板设置）在 `DSH_HOME/dsh-master`（默认 `~/.dsh/dsh-master`），卸载不会删。**从 0.2.1 升上来的这一次，装好后要重启一次桌面端**（0.2.1 卸载时留下的旧东西会让开着的总管会话每一轮报 `database is not open`）；0.2.2 以后再升级不用重启。
 
 **B. 单独起一个实例**（自己的 `DSH_HOME`、自己的端口）：
 
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # 第一次：建 profile
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.1/dsh-master-0.2.1.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
 dsh --profile master --port 3090                                            # 打开 http://127.0.0.1:3090
 ```
 

@@ -211,7 +211,10 @@ export function apply(ctx: any, config: Config = {}): void {
   if (config.projects !== false) for (const p of registry.list()) { try { openUnit(p) } catch (e) { warn('打开项目 %s 失败：%s', p.id, String(e)) } }
 
   // ---- 按角色装饰会话：工具 + 系统提示（角色守则 + 记忆层常驻摘要）----
-  const decorated = new WeakMap<object, Array<() => void>>()
+  // Map 不用 WeakMap：插件卸载 / 停用时要能逐个摘掉（智能体销毁时本来就会删掉自己那一项）
+  const decorated = new Map<object, Array<() => void>>()
+  // G15：插件正在卸载 / 停用。启动链、ensureSchedule 里 await 之后都要看它，别在旧实例死后还往宿主上挂东西、建定时
+  let disposed = false
   const toolDef = (u: Unit, spec: ToolSpec, caller: string) => ({
     name: spec.name, description: spec.description, parameters: spec.parameters,
     output: { schema: { type: 'object', additionalProperties: true }, render: (_a: unknown, v: unknown) => [{ type: 'text', text: JSON.stringify(v) }] },
@@ -227,27 +230,48 @@ export function apply(ctx: any, config: Config = {}): void {
     },
   })
   const decorate = (agent: any) => {
-    if (!agent || decorated.has(agent)) return
+    if (!agent || disposed || decorated.has(agent)) return
     const u = unitOf(agent.id)
     const role = u?.core.roleOf(agent.id)
     if (!u || !role) return
     const disposers: Array<() => void> = []
     decorated.set(agent, disposers)
-    for (const spec of u.core.toolsFor(agent.id)) disposers.push(agent.ctx.tools.register(toolDef(u, spec, agent.id)))
+    try { for (const spec of u.core.toolsFor(agent.id)) disposers.push(agent.ctx.tools.register(toolDef(u, spec, agent.id))) }
+    catch (e) { undecorate(agent); throw e } // 挂了一半的摘掉，不留半套
+    let lastGood = ''; let lastErr = ''
     try {
       disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-master-role', order: 9000, interpolate: false, text: () => {
-        const row = u.store.getSession(agent.id)
-        return [rolePrompt(role, agent.id, u.mem.docs.abs(u.core.handbookFile(agent.id, row?.handbook)), u.core.masterId, u.project ? { root: u.project.root, worktree: u.store.getMeta(`worktree:${agent.id}`), paused: role === 'master' ? pausedView(u) : undefined } : undefined), u.mem.residentSummary(), u.core.aliasTable()].filter(Boolean).join('\n\n') // G14 审稿 SHOULD 7 ⑩：叫法对照表
+        // 这段每一轮都会被宿主调用：这里抛错，整轮就「运行失败」。读库出错不拖垮会话，但也不能静默丢掉守则：
+        // 有上次成功的就用上次的并写明可能过期；从没成功过就给最小守则，让它先别动任务、告诉用户
+        try {
+          const row = u.store.getSession(agent.id)
+          lastGood = [rolePrompt(role, agent.id, u.mem.docs.abs(u.core.handbookFile(agent.id, row?.handbook)), u.core.masterId, u.project ? { root: u.project.root, worktree: u.store.getMeta(`worktree:${agent.id}`), paused: role === 'master' ? pausedView(u) : undefined } : undefined), u.mem.residentSummary(), u.core.aliasTable()].filter(Boolean).join('\n\n') // G14 审稿 SHOULD 7 ⑩：叫法对照表
+          lastErr = ''
+          return lastGood
+        } catch (e) {
+          const why = String((e as Error)?.message ?? e)
+          if (why !== lastErr) { warn('角色守则生成失败（%s）：%s', agent.id, why); lastErr = why }
+          if (lastGood) return `${lastGood}\n\n（dsh-master：本轮读取插件状态失败（${why}），以上守则可能已过期。）`
+          return `# 你是${role === 'master' ? '总管' : '成员'}（会话 ${agent.id}）\n\ndsh-master 插件这一轮读不到自己的状态（${why}）。这一轮不要派活、不要改任务状态；先告诉用户插件出错了，建议重启 DSH。`
+        }
       } }))
     } catch (e) { warn('systemPrompt.section 失败：%s', String(e)) }
     if (role === 'exec') {
+      // 保持 0.2.1 的行为：挂不上只记一笔（G15 第二轮审稿建议改成「摘掉重来」，全套 e2e 显示宿主上这一步会抛错，
+      // 那样成员就一个插件工具都没有了 ⇒ 回退；为什么会抛错另查）
       try { disposers.push(agent.ctx.tools.restrict({ deny: EXEC_DENY })) } catch (e) { warn('restrict 失败：%s', String(e)) }
     }
     log('decorated %s as %s（%s）', agent.id, role, u.key)
   }
-  const decorateLive = (id?: string) => { for (const a of ctx.agents.list?.() ?? []) if (!id || a.id === id) decorate(a) }
-  ctx.on('agent/created', ({ agent }: any) => { decorate(agent); return undefined })
-  ctx.on('agent/disposed', ({ agent }: any) => { for (const d of decorated.get(agent) ?? []) { try { d() } catch {} } decorated.delete(agent) })
+  // 一个智能体挂不上（比如宿主拒了同名工具）不能拖垮启动流程：启动链后面还有 recover / 定时保底 / ready。挂失败的不自动重试，开张 / 重启时再挂
+  const decorateLive = (id?: string) => { if (disposed) return; for (const a of ctx.agents.list?.() ?? []) if (!id || a.id === id) { try { decorate(a) } catch (e) { warn('装饰 %s 失败：%s', a.id, String(e)) } } }
+  ctx.on('agent/created', ({ agent }: any) => { try { decorate(agent) } catch (e) { warn('装饰 %s 失败：%s', agent?.id, String(e)) } return undefined })
+  const undecorate = (agent: object) => { for (const d of decorated.get(agent) ?? []) { try { d() } catch {} } decorated.delete(agent) }
+  ctx.on('agent/disposed', ({ agent }: any) => undecorate(agent))
+  // G15：插件被停用 / 卸载 / 换版本而宿主没重启（桌面端和插件页都是这样）时，开着的会话还在。
+  // 挂在智能体自己 ctx 上的工具和守则段不会随插件一起消失 ⇒ 这里摘干净；否则旧守则每一轮去读已关的库（database is not open），
+  // 新实例的同名守则段 / 工具也挂不上。新实例启动时 decorateLive() 会重新挂。
+  ctx.effect(() => () => { for (const agent of [...decorated.keys()]) undecorate(agent) })
   ctx.on('agent/status', ({ agent, status }: any) => {
     if (status === 'running' || status === 'idle') unitOf(agent.id)?.core.onStatus(agent.id, status)
   })
@@ -516,12 +540,14 @@ ${list}
   const profileDir: string | undefined = (() => { try { return ctx.profileContext?.dir ?? ctx.get?.('profileContext')?.dir } catch { return undefined } })()
   const ownName = (() => { try { return String(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).name || 'dsh-master') } catch { return 'dsh-master' } })()
   ctx.effect(() => () => {
+    disposed = true // 释放按注册倒序：这个 effect 比摘装饰、关库都先跑
     if (stillSelected(profileDir, ownName, 'dsh-master') !== false) return
     const sched = scheduleRef
     const masters = new Set(unitList().map(u => u.core.masterId))
     if (!sched) return
     log('插件被卸载或关闭：删掉定时保底（%s）', [...masters].join(','))
-    void (async () => {
+    // 返回 promise：宿主卸载时会等它删完，免得新实例在「旧的还没删」时查到它、跳过不建，随后旧的被删、一条不剩
+    return (async () => {
       for (const c of await schedEntries(sched)) {
         if (!c.sessionId || !masters.has(c.sessionId) || !c.title.startsWith('dsh-master 定时巡检保底')) continue
         try { await schedDelete(sched, c) } catch (e) { warn('卸载时删定时保底 %s：%s', c.id, String(e)) }
@@ -597,10 +623,12 @@ ${list}
     if (!every) return
     if (pausedInfo(u.store)) return // G8：暂停中不建（恢复时再建）
     const sched = await scheduleService()
+    if (disposed) return
     if (!sched) { u.store.addEvent({ at: bjtIso(systemClock()), session: u.core.masterId, type: 'schedule/unavailable', data: { every } }); return }
     const want = `dsh-master 定时巡检保底（每 ${every} 秒）`
     // G11-5：经 schedule-compat 走，DSH 0.2.1 / 0.2.2 两种定时服务接口都能用
     if ((await schedEntries(sched)).some(c => c.sessionId === u.core.masterId && c.title === want && c.active)) return
+    if (disposed) return // 旧实例停用时还卡在上面的 await 里：别跟新实例各建一条
     const id = await schedCreateEvery(sched, u.core.masterId, { title: want, everySeconds: every,
       prompt: '【这是 dsh-master 的定时巡检保底消息，不是用户说的】请调用 master_patrol 看一眼有没有停滞、投递失败、待用户定、带外改动；没有就直接结束本轮，不要回复用户。' })
     u.store.setMeta('schedule_id', String(id ?? ''))

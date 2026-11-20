@@ -32,12 +32,32 @@ describe('面板 · POST 请求头与动作白名单', () => {
     expect(checkPost(req({ ...good, origin: 'http://127.0.0.1:3091' }))).toMatch(/origin/) // 端口不同
     expect(checkPost(req({ ...good, origin: 'null' }))).toMatch(/origin/)
     expect(checkPost(req({ ...good, host: '192.168.0.5:3082', origin: 'http://192.168.0.5:3082' }))).toBeUndefined() // pocket 局域网入口：同源即可
-    const { origin: _o, ...noOrigin } = good
-    expect(checkPost(req(noOrigin))).toMatch(/origin/)
     const { 'x-dsh-master': _x, ...noHeader } = good
     expect(checkPost(req(noHeader))).toMatch(/x-dsh-master/)
     expect(checkPost(req({ ...good, 'content-type': 'text/plain' }))).toMatch(/content-type/)
     expect(checkPost(req({ ...good, 'content-type': 'application/octet-stream' }))).toMatch(/content-type/)
+  })
+  it('G15 官方桌面端：转发时删掉 Origin ⇒ 没带 Origin 凭 x-dsh-master + json 放行；带了的照旧要求同源', () => {
+    // 官方桌面端（dsh-app://app）的 forwardWebRequest 先核 origin、再删掉 host / origin / cookie / sec-fetch-site 转给本机服务
+    const desktop = { host: '127.0.0.1:52817', 'x-dsh-master': '1', 'content-type': 'application/json' }
+    expect(checkPost(req(desktop))).toBeUndefined()
+    const { host: _h, ...noHost } = desktop
+    expect(checkPost(req(noHost))).toBeUndefined()
+    // 没带 Origin 也不放松另外两道：自定义头（逼浏览器先预检）和 json
+    const { 'x-dsh-master': _x2, ...desktopNoHeader } = desktop
+    expect(checkPost(req(desktopNoHeader))).toMatch(/x-dsh-master/)
+    expect(checkPost(req({ ...desktop, 'x-dsh-master': '0' }))).toMatch(/x-dsh-master/)
+    expect(checkPost(req({ ...desktop, 'content-type': 'text/plain' }))).toMatch(/content-type/)
+    expect(checkPost(req({ ...desktop, 'content-type': 'application/x-www-form-urlencoded' }))).toMatch(/content-type/)
+    // 只比 MIME 本体（第一个 ; 之前、去空格、不分大小写）且精确相等：防止以后改成 startsWith / includes
+    for (const ct of ['multipart/form-data; boundary=x', 'application/json-patch+json', 'text/plain; x=application/json', 'application/jsonx', ''])
+      expect(checkPost(req({ ...desktop, 'content-type': ct })), ct).toMatch(/content-type/)
+    expect(checkPost(req({ ...desktop, 'content-type': 'Application/JSON; charset=utf-8' }))).toBeUndefined()
+    // 带了非 http(s) 的 Origin 也不放（宿主对带 Origin 的请求自己也会先比；桌面端转发时是删掉，不是原样转）
+    expect(checkPost(req({ ...desktop, origin: 'dsh-app://app' }))).toMatch(/origin/)
+    // 空字符串 / "null"（沙盒 iframe、file://）不算「没带」
+    expect(checkPost(req({ ...desktop, origin: '' }))).toMatch(/origin/)
+    expect(checkPost(req({ ...desktop, origin: 'null' }))).toMatch(/origin/)
   })
   it('白名单只有 answer / done / cancel / confirm_tag；G4c 删掉的 send / upload / new_task 一律拒', () => {
     for (const action of ['send', 'new_task', 'upload', 'rm -rf']) expect(validateAction({ action, text: 'hi', title: 't' })).toMatchObject({ error: expect.stringMatching(/不支持/) })

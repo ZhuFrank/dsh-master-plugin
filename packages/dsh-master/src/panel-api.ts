@@ -12,14 +12,26 @@ export const PANEL_LIMITS = {
 }
 
 
-/** POST 防跨站：Origin 必须是本服务、Content-Type 必须对、带自定义头（简单请求带不上）。 */
+/**
+ * POST 防跨站：带自定义头（简单请求带不上，跨站必须先预检，而宿主和插件都不回 CORS 头）、Content-Type 必须是 json；
+ * 带了 Origin 的还必须同源。
+ */
 export function checkPost(req: Request): string | undefined {
   // 宿主转进来的 req.url 是 http://dsh.internal/…（不是浏览器看到的地址），所以拿 Host 头比；
-  // 宿主的 /api 防线已经校验 Host 是本机 / 绑定地址 / trustedHosts，并且只在带了 Origin 时才比 ⇒ 这里要求必须带、且同源
-  const origin = req.headers.get('origin'); const host = req.headers.get('host')
-  let originHost: string | undefined
-  try { const u = new URL(origin ?? ''); if (u.protocol === 'http:' || u.protocol === 'https:') originHost = u.host } catch { /* 无效 */ }
-  if (!origin || !host || originHost !== host.toLowerCase()) return 'origin 不是本服务'
+  // 宿主的 /api 防线已经校验 Host 是本机 / 绑定地址 / trustedHosts、owner 认证，并且只在带了 Origin 时才比。
+  // G15：官方桌面端（Electron）用 dsh-app://app 加载界面，转发 /api 前自己核过 origin，再删掉 origin / host / cookie 转给本机服务
+  // ⇒ 请求到这里时根本没有 Origin。按 Fetch 规范，浏览器发 POST 一定带 Origin（最差是 "null"），所以「没带」只会是
+  // 桌面端这种先自己核过再删掉的转发方，或非浏览器客户端（它们本来就能随手写一个同源 Origin，Origin 校验从来挡不住）。
+  // 照宿主的口径放行，但自定义头和 json 两道照样要过。空字符串、"null" 不算没带。
+  // 前提：整条链上没人回 CORS 头（宿主和本插件都不回，e2e g15-desktop-origin 钉住）。自建反向代理若删掉浏览器的 Origin
+  // 又替你应答预检、回 CORS 头，这道防线就失效——那是代理的配置问题，见 README。
+  const origin = req.headers.get('origin')
+  if (origin !== null) {
+    const host = req.headers.get('host')
+    let originHost: string | undefined
+    try { const u = new URL(origin); if (u.protocol === 'http:' || u.protocol === 'https:') originHost = u.host } catch { /* 无效 */ }
+    if (!host || originHost === undefined || originHost !== host.toLowerCase()) return 'origin 不是本服务'
+  }
   if (req.headers.get('x-dsh-master') !== '1') return '缺少 x-dsh-master 请求头'
   const ct = (req.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
   if (ct !== 'application/json') return 'content-type 必须是 application/json'
