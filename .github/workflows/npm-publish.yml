@@ -1,0 +1,46 @@
+# Publish the release tarball to npm with npm trusted publishing (OIDC): no npm token is stored anywhere.
+# 发 GitHub Release 时，把 Release 附件原样发到 npm（npm 可信发布，不存任何 npm 密钥）。
+#
+# - Runs only when a release is published in ZhuFrank/dsh-master-plugin itself (forks and pull requests never trigger it).
+# - Publishes the exact asset attached to the release (dsh-master-<version>.tgz), so the npm package and the
+#   GitHub Release asset are byte-for-byte the same. It does not build anything.
+# - Pre-releases are skipped. Do not publish as a pre-release and promote it later: promoting fires `released`, not
+#   `published`, so nothing would be sent to npm; publish that version by hand instead.
+# - The release tag must point at a commit that already contains this file (the run uses the tagged commit's copy).
+# - npm side: package dsh-master → Settings → Trusted Publisher → GitHub Actions,
+#   repository ZhuFrank/dsh-master-plugin, workflow npm-publish.yml.
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.repository == 'ZhuFrank/dsh-master-plugin' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the release asset
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag $TAG is not vX.Y.Z"; exit 1; }
+          VER="${TAG#v}"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "dsh-master-${VER}.tgz" \
+            "https://github.com/${REPO}/releases/download/${TAG}/dsh-master-${VER}.tgz"
+          tar -xzOf "dsh-master-${VER}.tgz" package/package.json > pkg.json
+          node -e 'const p=require("./pkg.json"); if (p.name!=="dsh-master"||p.version!==process.argv[1]) { console.error("package.json says "+p.name+"@"+p.version); process.exit(1) }' "$VER"
+          sha256sum "dsh-master-${VER}.tgz"
+          echo "VER=${VER}" >> "$GITHUB_ENV"
+
+      - name: Publish to npm (trusted publishing needs npm >= 11.5.1 and Node >= 22.14.0)
+        run: |
+          set -euo pipefail
+          node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (a<22||(a===22&&b<14)) { console.error("Node "+process.versions.node+" is too old for trusted publishing"); process.exit(1) }'
+          npx --yes npm@11.6.2 publish "./dsh-master-${VER}.tgz" --access public --registry https://registry.npmjs.org/
