@@ -8,7 +8,8 @@
 #   `published`, so nothing would be sent to npm; publish that version by hand instead.
 # - The release tag must point at a commit that already contains this file (the run uses the tagged commit's copy).
 # - npm side: package dsh-master → Settings → Trusted Publisher → GitHub Actions,
-#   repository ZhuFrank/dsh-master-plugin, workflow npm-publish.yml.
+#   repository ZhuFrank/dsh-master-plugin, workflow npm-publish.yml, environment npm-publish.
+# - Each run waits for approval in the GitHub environment npm-publish (Actions → the run → Review deployments).
 name: Publish to npm
 
 on:
@@ -23,6 +24,9 @@ jobs:
   publish:
     if: github.repository == 'ZhuFrank/dsh-master-plugin' && !github.event.release.prerelease
     runs-on: ubuntu-24.04
+    # Environment npm-publish: only v* tags may deploy, and Frank must approve each run (admins cannot bypass).
+    # The npm trusted publisher is bound to this environment name too.
+    environment: npm-publish
     steps:
       - name: Download the release asset
         env:
