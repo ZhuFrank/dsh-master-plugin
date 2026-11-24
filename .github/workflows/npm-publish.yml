@@ -10,6 +10,7 @@
 # - npm side: package dsh-master → Settings → Trusted Publisher → GitHub Actions,
 #   repository ZhuFrank/dsh-master-plugin, workflow npm-publish.yml, environment npm-publish.
 # - Each run waits for approval in the GitHub environment npm-publish (Actions → the run → Review deployments).
+# - It refuses to publish unless the CI workflow (ci.yml) has a successful run on the tagged commit.
 name: Publish to npm
 
 on:
@@ -19,9 +20,27 @@ on:
 permissions:
   contents: read
   id-token: write
+  actions: read # to check that CI passed on the tagged commit
 
 jobs:
+  # Runs before the approval gate, so a red CI never even asks Frank for approval.
+  ci-passed:
+    if: github.repository == 'ZhuFrank/dsh-master-plugin' && !github.event.release.prerelease
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require a green CI run on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          n=$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=1" --jq '.total_count')
+          [ "${n:-0}" -gt 0 ] || { echo "CI has not passed on ${SHA}; not publishing"; exit 1; }
+          echo "CI passed on ${SHA}"
+
   publish:
+    needs: ci-passed
     if: github.repository == 'ZhuFrank/dsh-master-plugin' && !github.event.release.prerelease
     runs-on: ubuntu-24.04
     # Environment npm-publish: only v* tags may deploy, and Frank must approve each run (admins cannot bypass).

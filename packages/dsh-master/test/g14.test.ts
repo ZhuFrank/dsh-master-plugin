@@ -150,7 +150,7 @@ describe('G14 ① 重活队列', async () => {
     await expect(h.hq.submit({ session: 'exec-a', label: 'x', command: 'true', cwd, minFreeGb: 32 })).rejects.toThrow(/整机内存/)
     const r: any = await h.hq.submit({ session: 'exec-a', label: 'y', command: 'true', cwd, minFreeGb: 6 })
     expect(String(r.note)).toMatch(/4\.3[\s\S]*6/)
-    expect(String(r.note)).toContain('inactive')
+    expect(String(r.note)).toContain(process.platform === 'darwin' ? 'inactive' : 'os.freemem()') // G16：口径按平台写
   })
   it('取消：只管排队中的；取消后状态 cancelled，提交的会话收到通知', async () => {
     const h = q(1); const cwd = tmpdir('g14hc')
@@ -185,7 +185,7 @@ describe('G14 ① 重活队列', async () => {
     expect(await tool(MASTER_ID, 'heavy_cancel')({ id: j2.id })).toMatchObject({ state: 'cancelled' })
     const st: any = await tool('exec-a', 'heavy_status')({})
     expect(st.free_gb).toBe(1)
-    expect(String(st.how)).toContain('inactive')
+    expect(String(st.how)).toContain(process.platform === 'darwin' ? 'inactive' : 'os.freemem()') // G16：口径按平台写
     expect(st.jobs.map((j: any) => j.state)).toEqual(['cancelled', 'cancelled'])
   })
 
@@ -206,8 +206,8 @@ describe('G14 ① 重活队列', async () => {
     expect(f[0]!.text).toMatch(/20 分钟[\s\S]*6[\s\S]*4\.3/)
   })
 
-  it('预设：看内存用 heavy_status，不要自己读 vm_stat 的 free 页', () => {
-    for (const role of ['master', 'exec'] as const) expect(rolePrompt(role, role === 'master' ? MASTER_ID : 'exec-a')).toMatch(/heavy_status[\s\S]*vm_stat/)
+  it('预设：看内存用 heavy_status，不要自己读 vm_stat 的 free 页（Windows 上：系统的内存数）', () => {
+    for (const role of ['master', 'exec'] as const) expect(rolePrompt(role, role === 'master' ? MASTER_ID : 'exec-a')).toMatch(process.platform === 'darwin' ? /heavy_status[\s\S]*vm_stat/ : /heavy_status[\s\S]*不要自己读系统的内存数/)
   })
 })
 

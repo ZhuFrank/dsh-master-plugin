@@ -285,15 +285,17 @@ describe('重活队列', () => {
   it('内存不够就排队不跑；够了才跑；同一时间只跑一件；跑完通知', async () => {
     const h = setupHeavy(1)
     const cwd = tmpdir('hc')
-    await h.q.submit({ session: 'exec-a', label: 'one', command: 'echo one > one.txt', cwd, minFreeGb: 4 })
-    await h.q.submit({ session: 'exec-a', label: 'two', command: 'echo two > two.txt', cwd, minFreeGb: 4 })
+    // G16：Windows 上重活用 PowerShell 跑（PowerShell 的 > 写 UTF-16 / 带 CRLF），按平台写命令
+    const w = (n: string) => process.platform === 'win32' ? `Set-Content -NoNewline -Encoding ascii ${n}.txt ${n}` : `echo ${n} > ${n}.txt`
+    await h.q.submit({ session: 'exec-a', label: 'one', command: w('one'), cwd, minFreeGb: 4 })
+    await h.q.submit({ session: 'exec-a', label: 'two', command: w('two'), cwd, minFreeGb: 4 })
     expect(h.store.heavyJobs('queued')).toHaveLength(2)
     h.setFree(8); h.q.tick()
     expect(h.store.heavyJobs('running')).toHaveLength(1)
     h.q.tick(); expect(h.store.heavyJobs('running')).toHaveLength(1)
     await waitDone(h.done, 2)
     expect(h.done.map(j => `${j.label}:${j.state}:${j.exit_code}`)).toEqual(['one:done:0', 'two:done:0'])
-    expect(fs.readFileSync(path.join(cwd, 'two.txt'), 'utf8')).toBe('two\n')
+    expect(fs.readFileSync(path.join(cwd, 'two.txt'), 'utf8')).toBe(process.platform === 'win32' ? 'two' : 'two\n')
   })
   it('守卫拒绝的命令不入队；上次进程留下的「运行中」标失败并通知', async () => {
     const h = setupHeavy(8)

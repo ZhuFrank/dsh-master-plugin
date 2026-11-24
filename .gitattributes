@@ -1,0 +1,6 @@
+# Keep LF line endings everywhere (Windows CI runners default to core.autocrlf=true; the plugin's markdown parsing and tests expect LF).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.tgz binary

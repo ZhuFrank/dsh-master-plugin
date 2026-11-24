@@ -55,7 +55,7 @@ dsh-master 把这些记账的活交给插件：
 - DeepSeek Harness 的 **`dsh web`** 或**官方桌面端**，版本 `>=0.2.1-rc.5 <0.3.0-0`，也就是 0.2.1 和 0.2.2 两个系列。这个范围写在 `engines.dsh` 里，超出范围 DSH 会拒绝安装和加载。在 `0.2.1-rc.5`、`0.2.2-rc.1`、`0.2.2-rc.4` 上测过，桌面端在 `0.2.2-rc.5` 上测过。0.2.2 上已知：在宿主的提问卡片上答完以后，看板「等你点」的提醒有时会晚一点才消失（插件只负责提醒，答案由 DSH 自己处理）；0.2.0 也一样，在查。
 - Node.js **>= 22.19**（用到内置的 `node:sqlite`）。DSH 0.2.2 本身要 Node >= 24.9。
 - DSH 0.2.2 上，宿主「写之前先读」的文件防护（`dsh-base` 组合包里的 `fs-observation-policy`）**默认关**。关着的时候，两个成员同时改同一个文件，宿主不会拦下后写的，插件的「乐观锁冲突提示」也就不起作用；插件自己的「认领」（成员写进别的任务认领的范围会被拦下）不受影响。要这道防护，把 profile 里那一行改成 `disabled: false`。它对 profile 里的所有会话生效，所以插件不替你改。
-- 目前只在 macOS 上测过。
+- 平台：在 macOS 上开发；0.2.3 起也支持 Windows（在 Windows 11 上测过；见下面的 [Windows](#windows)）。Linux 只在 CI 里跑单测，还没配真 DSH 试过。
 - 如果你在 DSH 前面自己架了反向代理：别让它删掉浏览器请求的 `Origin` 头，也别让它替 DSH 应答预检、回 CORS 头，否则看板写操作的防跨站检查会失效。
 
 ## 安装
@@ -92,6 +92,20 @@ git clone https://github.com/ZhuFrank/dsh-master-plugin && cd dsh-master-plugin
 pnpm install && pnpm build
 dsh plugin --profile web add link:$PWD/packages/dsh-master
 ```
+
+### Windows
+
+0.2.3 起支持 Windows。Windows 上 DSH 给模型的命令行工具是 PowerShell（`pwsh`），不是 `bash`。和 macOS 不一样的地方：
+
+- **重活排队**（`heavy_run`）用 PowerShell 跑，选法和 DSH 一样（装了 PowerShell 7 用 7，否则用系统自带的 5.1），不弹窗口。命令照在 `pwsh` 工具里那样用 PowerShell 写，但重活是插件起的、不是 DSH 起的：不进 DSH 的沙盒，没有 DSH 的 `DSH_*` 环境变量，你给 DSH 配的 `pwshPath` 也不跟。日志里 PowerShell 自己的输出是 UTF-8（日志开头有 BOM），原生程序直接写日志，可能是系统代码页。用 `read` 工具读；在 PowerShell 5.1 里读要加 `-Encoding UTF8`。程序都没起来时，原因写在日志和「重活结束」的消息里。
+- **状态目录守卫**认得 PowerShell：命令一碰到插件的状态目录（`$DSH_HOME\dsh-master`、`<项目>\.dsh-master`），只放行只读命令（`Get-Content`、`ls`、`Select-String`、`Test-Path`、只读的 `git` 等），常见的写法（`Set-Content`、`Remove-Item`、`> 文件`、.NET 写法、方法调用、给属性赋值、`iex`、脚本等）都会拦下，提示改用 `read` 工具。不分大小写，认得 `$env:X`、`Join-Path`、`-Path:值`、`\\?\` 路径、通配符和前面的 `cd`。命令里连目录名都没出现、运行时才拼出来的路径看不出来，靠带外改动检测兜底（见[已知问题](#已知问题)）。
+- 实际装过一遍（Windows 11、DSH 0.2.2-rc.5）的注意事项：
+  - PowerShell 可能拒绝运行 `npm` / `dsh`（「禁止运行脚本」）：改用 `npm.cmd` / `dsh.cmd`，或者 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
+  - npm 11 默认不跑依赖的安装脚本：装 DSH 用 `npm i -g @deepseek-ai/dsh --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs`。
+  - `dsh plugin` 要用 `pnpm`（`npm i -g pnpm`），npm 装的 DSH 不带。
+  - 装完 Node、设好 `DSH_HOME` 之后要开一个新终端，旧终端里还是旧的 `PATH` / 环境变量。
+  - 工作目录用自己的账号（非管理员）建。所有者是 Administrators 的目录，DSH 沙盒加不上权限，`pwsh` 命令全会失败。
+  - `dsh web` 和桌面端可以共用一个 `DSH_HOME`（模型 key 共用），但插件状态目录也是共用的：两边别同时开，后开的那个插件起不来。
 
 ## 快速上手
 
@@ -153,6 +167,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 ## 已知问题
 
 - **DSH 里所有 `git` 命令都报 `missing config key GIT_CONFIG_KEY_0`、退出码 128。** 原因是启动 `dsh web` 的环境里带着 `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`：DSH 的 bash 沙盒会去掉 `GIT_CONFIG_KEY_*`，却把另外两个传了进去。这不是本插件引起的。绕法：启动 DSH 前先 `unset GIT_CONFIG_COUNT`（或用 `env -u GIT_CONFIG_COUNT dsh web …` 启动）。
+- **状态目录守卫只看得到命令里写出来的东西。** 命令里看得出要往插件状态目录里写的（bash 和 PowerShell 都算，也认 `workdir` 参数）会被拦；但运行时用变量拼出来的路径、bash 里先 `cd` 进去再写相对路径、自己写文件的脚本、8.3 短文件名、目录联接 / 符号链接、`subst` 映射的盘符、WSL 的 `/mnt/…` 路径、删掉**上级**目录，都看不出来。兜底是带外改动检测：插件下次写自己的文档时发现被改过，把外面的版本另存到 `drift-copies/`，巡检会报出来。删掉的文件、被改的 `master.db` / `memory.db` 救不回来。
 
 ## 和 DeepSeek Super-agent 设计的关系
 

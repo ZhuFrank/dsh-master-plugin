@@ -21,14 +21,15 @@ import { DshPorts, PRESET_IDS } from './dsh-port.ts'
 import { toolOutput } from './tool-output.ts'
 import { pausedInfo, setPaused } from './pause.ts'
 import { resolveLegacyMode, masterPresetOf, stillSelected, type LegacyMode } from './release-defaults.ts'
-import { guardDecision, bashWriteTargets, fileToolTarget } from './guard.ts'
+import { guardDecision, bashWriteTargets, fileToolTarget, effectiveCwd } from './guard.ts'
+import { pwshWriteTargets } from './guard-pwsh.ts'
 import { denyText, fsConflict, CONFLICT_HINT, rel as relPath } from './claims.ts'
 import { waitService } from './services.ts'
 import { acquireStateLock } from './lock.ts'
 import { systemClock, bjtIso, bjtStamp } from './time.ts'
 import { rolePrompt } from './prompts.ts'
 import { Patrol } from './patrol.ts'
-import { HeavyQueue } from './heavy.ts'
+import { HeavyQueue, LOG_READ_HINT } from './heavy.ts'
 import { FilePushGate, topicPriors, scheduleStep, isSafetyNetDelivery } from './recall-push.ts'
 import { PanelService, PanelError } from './panel-service.ts'
 import { validateAction, checkPost, readLimited, drain, PANEL_LIMITS } from './panel-api.ts'
@@ -167,9 +168,15 @@ export function apply(ctx: any, config: Config = {}): void {
     logDir: path.join(stateDir, 'heavy'),
     ...(config.fakeFreeGb !== undefined ? { freeGb: () => config.fakeFreeGb! } : {}),
     ...(config.heavySkipAhead === false ? { skipAhead: false } : {}),
-    guard: (command, cwd) => guardDecision({ name: 'bash', args: { command }, cwd }, { protectedPaths: protectedPaths(), env }),
+    // G16：Windows 上重活用 PowerShell 跑 ⇒ 按 pwsh 的规则判；带上调用者的角色和配置（Q5：成员不能借 heavy_run 动 git、读实例日志；产物目录不误拦）
+    guard: (command, cwd, session) => {
+      const u = unitOf(session)
+      const role = session && u ? u.core.roleOf(session) : undefined
+      const noGit = !!(u?.project && role === 'exec' && session && !u.store.getMeta(`worktree:${session}`))
+      return guardDecision({ name: process.platform === 'win32' ? 'pwsh' : 'bash', args: { command }, cwd, role }, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths, context: 'heavy' })
+    },
     onDone: job => {
-      try { (unitOf(job.session) ?? units.get(LEGACY)!).core.systemNotify({ key: `heavy:${job.id}:${job.state}`, to: job.session, label: '重活结束', text: job.state === 'cancelled' ? `heavy_run #${job.id}「${job.label}」已取消（${(job as any).cancelled_by ?? '未知'} 取消的），没有跑。` : `heavy_run #${job.id}「${job.label}」${job.state === 'done' ? '跑完了' : '失败了'}（exit=${job.exit_code ?? '中断'}）。日志：${job.log}` }) }
+      try { (unitOf(job.session) ?? units.get(LEGACY)!).core.systemNotify({ key: `heavy:${job.id}:${job.state}`, to: job.session, label: '重活结束', text: job.state === 'cancelled' ? `heavy_run #${job.id}「${job.label}」已取消（${(job as any).cancelled_by ?? '未知'} 取消的），没有跑。` : `heavy_run #${job.id}「${job.label}」${job.state === 'done' ? '跑完了' : '失败了'}（${job.start_error ? `启动失败：${job.start_error}` : `exit=${job.exit_code ?? '中断'}`}）。日志：${job.log}${LOG_READ_HINT}` }) }
       catch (e) { warn('heavy notify: %s', String(e)) }
     },
   })
@@ -388,6 +395,9 @@ export function apply(ctx: any, config: Config = {}): void {
     if (role === 'master' && callerId) { try { unitOf(callerId)?.core.noteToolCall(callerId, exec?.name) } catch { /* 统计失败不影响工具 */ } } // G14 ⑧
     const cwd = exec?.agent ? cwdOf(exec.agent) : undefined
     const call = { name: exec?.name, args: exec?.arguments, role, cwd }
+    /** G16：命令实际的工作目录（工具参数 workdir 优先）；写目标按它解析。 */
+    const runCwd = effectiveCwd(call, env)
+    const cmdWrites = (cmd: unknown): string[] => typeof cmd !== 'string' ? [] : exec?.name === 'bash' ? bashWriteTargets(cmd, runCwd, env) : exec?.name === 'pwsh' ? pwshWriteTargets(cmd, runCwd, env, path) : []
     // G6-4：项目成员（工作目录是项目根，不是临时 worktree）不许动 git 暂存区 / 提交 / 分支
     const noGit = !!(u?.project && role === 'exec' && callerId && !u.store.getMeta(`worktree:${callerId}`))
     const reason = guardDecision(call, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths })
@@ -400,7 +410,7 @@ export function apply(ctx: any, config: Config = {}): void {
     if (u?.project && role === 'exec' && callerId) {
       const ft = fileToolTarget(call, env.HOME)
       const cmd = exec?.arguments?.command
-      const writes = ft ? [ft] : (exec?.name === 'bash' && typeof cmd === 'string' ? bashWriteTargets(cmd, cwd, env) : [])
+      const writes = ft ? [ft] : cmdWrites(cmd)
       for (const target of writes) {
         const hit = u.core.claimHitFor(callerId, target)
         if (!hit) continue
@@ -413,7 +423,7 @@ export function apply(ctx: any, config: Config = {}): void {
     if (u && role && callerId && config.autoRecall?.byFile !== false) {
       const target = fileToolTarget(call, env.HOME)
       const cmd = exec?.arguments?.command
-      const targets = target ? [target] : (exec?.name === 'bash' && typeof cmd === 'string' ? bashWriteTargets(cmd, cwd, env) : [])
+      const targets = target ? [target] : cmdWrites(cmd)
       const push = targets.length ? u.filePush.decide(callerId, targets) : undefined
       if (push) {
         u.store.addEvent({ at: bjtIso(systemClock()), session: callerId, type: 'recall/push-file', data: { targets: push.files, slugs: push.priors.map(p => p.slug) } })

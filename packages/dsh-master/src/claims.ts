@@ -6,6 +6,7 @@
  * bash 跑脚本写文件（python / node 脚本里写）看不出来，只能靠守则；这是「软」认领。
  */
 import path from 'node:path'
+import { SHELL_TOOL } from './platform.ts'
 
 export interface Claim { task: string; owner: string; paths: string[]; at: string; reason?: string | undefined }
 
@@ -59,7 +60,7 @@ export const rel = (root: string, p: string) => { const r = path.relative(root, 
 
 export function denyText(target: string, hit: { claim: Claim; path: string }, root: string): string {
   return `[dsh-master 认领] ${rel(root, target)} 在 ${hit.claim.task} 的认领范围里（负责的是 ${hit.claim.owner}，认领了 ${rel(root, hit.path)}）。` +
-    `不要改，也不要换个写法（bash / 脚本）绕过去：用 master_report(state=受阻) 告诉总管你要改哪个文件、为什么，由总管协调。`
+    `不要改，也不要换个写法（${SHELL_TOOL} / 脚本）绕过去：用 master_report(state=受阻) 告诉总管你要改哪个文件、为什么，由总管协调。`
 }
 
 /** 宿主文件工具的冲突报错（乐观锁）：FS_STALE_VERSION（别人改过）/ FS_NOT_OBSERVED（没读过就改）。 */
@@ -69,6 +70,6 @@ export function fsConflict(text: string): 'stale' | 'unread' | undefined {
   return undefined
 }
 export const CONFLICT_HINT: Record<'stale' | 'unread', string> = {
-  stale: '[dsh-master 提示] 这个文件在你读过以后被改过了（可能是同一项目里的另一个成员）。你的修改没有写进去。先用 read 重读，把你要做的改动放到新内容上再改；不要用 bash 直接覆盖，那样会把别人的改动冲掉。改的是别人认领的文件就先找总管。',
+  stale: `[dsh-master 提示] 这个文件在你读过以后被改过了（可能是同一项目里的另一个成员）。你的修改没有写进去。先用 read 重读，把你要做的改动放到新内容上再改；不要用 ${SHELL_TOOL} 直接覆盖，那样会把别人的改动冲掉。改的是别人认领的文件就先找总管。`,
   unread: '[dsh-master 提示] 宿主要求先读再改：先用 read 读这个文件，再在读到的内容上改。文件已经存在，说明可能是别人刚建的，读完确认不会覆盖别人的内容再写。',
 }

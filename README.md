@@ -45,7 +45,7 @@ A single DSH session works well for a single task. Once you have several streams
 - DeepSeek Harness **`dsh web`** or the **official desktop app**, version `>=0.2.1-rc.5 <0.3.0-0`, i.e. the 0.2.1 and 0.2.2 lines (declared in `engines.dsh`; DSH refuses to install or load it outside this range). Tested on `0.2.1-rc.5`, `0.2.2-rc.1` and `0.2.2-rc.4`, and in the desktop app on `0.2.2-rc.5`. Known on 0.2.2: after you answer a question card in the host, the board's "waiting for your click" banner sometimes stays a little longer than it should (the plugin only shows the reminder; the answer itself is handled by DSH). 0.2.0 behaves the same; it is being looked into.
 - Node.js **>= 22.19** (the plugin uses the built-in `node:sqlite`). DSH 0.2.2 itself needs Node >= 24.9.
 - On DSH 0.2.2, the host's "read before write" guard (`fs-observation-policy` in the `dsh-base` bundle) is **off by default**. While it is off, two members editing the same file are not stopped by the host, so the plugin's "optimistic lock" conflict notice does not fire. Task claims (a member writing into another task's claimed paths is blocked) are the plugin's own and still work. To turn the guard on, set that entry to `disabled: false` in your profile; this applies to every session in the profile, so the plugin does not change it for you.
-- macOS is the only platform tested so far.
+- Platforms: developed on macOS; from 0.2.3 also Windows (tested on Windows 11; see [Windows](#windows) below). Linux runs the unit tests in CI but has not been tried with a real DSH.
 - If you put your own reverse proxy in front of DSH, do not let it strip the browser's `Origin` header or answer preflight requests with CORS headers on DSH's behalf; either would defeat the board's cross-site check.
 
 ## Install
@@ -82,6 +82,20 @@ git clone https://github.com/ZhuFrank/dsh-master-plugin && cd dsh-master-plugin
 pnpm install && pnpm build
 dsh plugin --profile web add link:$PWD/packages/dsh-master
 ```
+
+### Windows
+
+From 0.2.3 the plugin supports Windows, where DSH gives models a PowerShell tool (`pwsh`) instead of `bash`. What is different there:
+
+- **Heavy jobs** (`heavy_run`) run in PowerShell, picked the same way DSH picks it (PowerShell 7 if installed, else Windows PowerShell 5.1), with no console window. Write the command in PowerShell, as in the `pwsh` tool, but note that a heavy job is started by the plugin, not by DSH: it does not run in DSH's sandbox, does not get DSH's `DSH_*` environment variables, and ignores a `pwshPath` you may have set for DSH. PowerShell's own output in the job log is UTF-8 (the log starts with a BOM); native programs write to the log directly and may use the system code page. Read the log with the `read` tool, or `Get-Content -Encoding UTF8` in PowerShell 5.1. If the program cannot even start, the reason is in the log and in the "job finished" message.
+- **The state-folder guard** understands PowerShell: once a command touches the plugin's state folders (`$DSH_HOME\dsh-master`, `<project>\.dsh-master`), only read-only commands are let through (`Get-Content`, `ls`, `Select-String`, `Test-Path`, read-only `git` …); the common ways of writing (`Set-Content`, `Remove-Item`, `> file`, .NET writes, method calls, property assignment, `iex`, scripts …) are refused with a hint to use the `read` tool. Case does not matter, and `$env:X`, `Join-Path`, `-Path:value`, `\\?\` paths, wildcards and a preceding `cd` are understood. Paths assembled at run time without the folder name in the command cannot be seen; the out-of-band change check stays as the backstop (see [Known issues](#known-issues)).
+- Install notes from a real install (Windows 11, DSH 0.2.2-rc.5):
+  - PowerShell may refuse to run `npm` / `dsh` ("running scripts is disabled"): use `npm.cmd` / `dsh.cmd`, or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+  - npm 11 skips dependency install scripts: install DSH with `npm i -g @deepseek-ai/dsh --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs`.
+  - `dsh plugin` needs `pnpm` (`npm i -g pnpm`); npm-installed DSH does not bring it.
+  - After installing Node or setting `DSH_HOME`, open a new terminal; an old one still has the old `PATH` / environment.
+  - Create the workspace folder from your own (non-admin) account. A folder owned by Administrators makes DSH's sandbox fail to set permissions and every `pwsh` command fails.
+  - `dsh web` and the desktop app can share one `DSH_HOME` (they share the model key), but they also share the plugin's state folder: do not run both at the same time, or the second one's plugin will not start.
 
 ## Quick start
 
@@ -135,6 +149,7 @@ Remove the plugin from the **Plugins** page, or run `dsh plugin --profile web re
 ## Known issues
 
 - **Every `git` command inside DSH fails with `missing config key GIT_CONFIG_KEY_0` (exit 128).** This happens when the environment that starts `dsh web` contains `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`: DSH's bash sandbox drops the `GIT_CONFIG_KEY_*` variables but passes the other two. It is not caused by this plugin. Workaround: start DSH with `unset GIT_CONFIG_COUNT` (or `env -u GIT_CONFIG_COUNT dsh web …`).
+- **The state-folder guard only sees what is written in the command.** It refuses commands that visibly write into the plugin's state folders (bash and PowerShell, including the `workdir` argument), but not a path assembled at run time from variables, a bash `cd` into the folder followed by a relative path, a script that writes files on its own, 8.3 short names, junctions / symlinks, a `subst` drive, a WSL `/mnt/…` path, or deleting a *parent* folder. The backstop is the out-of-band change check: the next time the plugin writes one of its own documents it notices the change, keeps the outside version in `drift-copies/` and patrol reports it. It cannot undo a deleted file or a changed `master.db` / `memory.db`.
 
 ## Relation to DeepSeek's Super-agent design
 

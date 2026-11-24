@@ -3,6 +3,7 @@
  * 不直接碰 DSH：DSH 的会话操作经 SessionPort，投递经 Delivery。便于在单测里用假实现。
  */
 import fs from 'node:fs'
+import { SHELL_TOOL, MEM_SELF_READ } from './platform.ts'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { Store, Role, TaskRow } from './store.ts'
@@ -304,7 +305,7 @@ export class Core {
       { name: 'heavy_cancel', description: '取消一件还在排队的重活（成员只能取消自己提交的；总管能取消本项目成员的）。跑着的停不了。门槛设高了排着不动时，取消后用低一点的门槛重提。',
         parameters: schema({ id: { type: 'number', description: 'heavy_run 返回的 id' } }, ['id']),
         run: (a: unknown, caller: string) => this.heavyCancel(obj(a), caller) } as ToolSpec,
-      { name: 'heavy_status', description: '看重活队列（本项目成员的活：排队 / 在跑 / 最近结束的，门槛、排了多久）和插件读到的当前可用内存。看内存用它，不要自己读 vm_stat 的 free 页（口径不一样，会读成只剩一百多 MB）。',
+      { name: 'heavy_status', description: `看重活队列（本项目成员的活：排队 / 在跑 / 最近结束的，门槛、排了多久）和插件读到的当前可用内存。看内存用它，${MEM_SELF_READ}。`,
         parameters: schema({}, []),
         run: (_a: unknown, caller: string) => this.heavyStatus(caller) } as ToolSpec]
   }
@@ -314,7 +315,7 @@ export class Core {
       { name: 'master_report', description: '向总管回报（结构化状态行）。状态只能是：进展、等待、受阻、失败、就绪、完成。时间由插件按北京时间自动填，不要自己写时间。闸门到了用「就绪」并停下等验收。body 要点放前面：超过 1,500 字时总管只收到前 1,500 字（全文照存在看板和任务书）。',
         parameters: schema({ task: S('任务 ID'), state: S('状态', { enum: [...REPORT_STATES] }), action: S('当前动作，一句话'), ask: S('要总管/用户定的一个具体问题（可选）'), gate: S('就绪时：哪个闸门'), body: S('做了什么、产物绝对路径、怎么验的、遇到的问题（可选）') }, ['task', 'state', 'action']),
         run: (a, caller) => this.report(obj(a), caller) },
-      ...(this.opts.heavy ? [{ name: 'heavy_run', description: '重活（渲染、转写、分离音轨、本地大模型推理）排队跑：先查系统可用内存，同一时间只跑一件；跑完会自动发消息告诉你结果和日志路径。不要用 bash 直接跑这些。',
+      ...(this.opts.heavy ? [{ name: 'heavy_run', description: `重活（渲染、转写、分离音轨、本地大模型推理）排队跑：先查系统可用内存，同一时间只跑一件；跑完会自动发消息告诉你结果和日志路径。不要用 ${SHELL_TOOL} 直接跑这些。`,
         parameters: schema({ label: S('简短标签'), command: S('要跑的命令（在你的工作目录里执行）'), min_free_gb: { type: 'number', description: '至少要多少 GB 可用内存才开跑（默认 4）' } }, ['label', 'command']),
         run: (a: unknown, caller: string) => this.heavyRun(obj(a), caller) } as ToolSpec,
       ...this.heavyAdminTools()] : []),

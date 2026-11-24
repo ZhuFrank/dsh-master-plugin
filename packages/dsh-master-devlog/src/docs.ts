@@ -20,7 +20,12 @@ export class ManagedDocs {
     if (p !== this.root && !p.startsWith(this.root + path.sep)) throw new Error(`路径越界：${rel}`)
     return p
   }
+  /** 给读内容的地方用：CRLF 统一成 LF（G16：Windows 上用户拿会存 CRLF 的编辑器改过手册 / 任务书，按 `\n## ` 找节会找不到）。 */
   read(rel: string): string | undefined {
+    return this.readRaw(rel)?.replace(/\r\n/g, '\n')
+  }
+  /** 原样读（带外改动检测按原始字节算校验值）。 */
+  readRaw(rel: string): string | undefined {
     const p = this.abs(rel)
     return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : undefined
   }
@@ -59,7 +64,7 @@ export class ManagedDocs {
   verify(): Drift[] {
     const out: Drift[] = []
     for (const f of this.db.all<{ path: string; sha256: string; kind: string }>('SELECT path, sha256, kind FROM files ORDER BY path')) {
-      const cur = this.read(f.path)
+      const cur = this.readRaw(f.path)
       if (cur === undefined) out.push({ path: f.path, kind: f.kind, problem: 'missing', expected: f.sha256 })
       else { const h = sha256(cur); if (h !== f.sha256) out.push({ path: f.path, kind: f.kind, problem: 'modified', expected: f.sha256, actual: h }) }
     }

@@ -155,6 +155,12 @@ it('G3：记忆层 + 自动推送回忆 + 守卫绕过修复 + 静默巡检 + �
   await prompt('exec-worker', call('heavy_run', { label: 'echo', command: 'echo heavy-ok > heavy.txt', min_free_gb: 1 }))
   await s.waitFor('执行会话收到重活结束消息', async () => (await history('exec-worker')).find(e => e.type === 'user/message' && e.text.includes('heavy_run #') && e.text.includes('跑完了')), 30_000)
   expect(fs.readFileSync(path.join(workerDir, 'heavy.txt'), 'utf8')).toBe('heavy-ok\n')
+  // G16（Q5）：heavy_run 提交前的守卫带上调用者角色 ⇒ 成员不能借重活读实例日志（里面有登录令牌）
+  const before9 = (await toolResults('exec-worker')).length
+  await prompt('exec-worker', call('heavy_run', { label: 'peek', command: 'cat "$DSH_HOME/logs/dsh.0.log" > peek.txt', min_free_gb: 1 }))
+  const denied = await s.waitFor('成员借 heavy_run 读实例日志被拦', async () => (await toolResults('exec-worker')).slice(before9).find(r => r.includes('实例日志目录')))
+  expect(denied).toBeTruthy()
+  expect(fs.existsSync(path.join(workerDir, 'peek.txt'))).toBe(false)
 
   // 10. 汇总 + 用户环境未动
   const pushes = q<{ type: string; c: number }>('master.db', `SELECT type, count(*) AS c FROM events WHERE type LIKE 'recall/%' GROUP BY type ORDER BY type`)

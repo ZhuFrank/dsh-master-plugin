@@ -1,0 +1,72 @@
+# Unit tests on macOS, Linux and Windows. No secrets are used or available here.
+# 三个系统跑单测（含 Windows 上真起 PowerShell 的重活测试）。这里不用、也拿不到任何密钥。
+#
+# - What runs: install (frozen lockfile) → typecheck → unit tests → build; on Linux also pack the npm tarball and check its contents.
+# - What does not run here: the end-to-end suite (needs a real DSH install and headless Chrome; it runs on macOS before each release),
+#   mutation testing, and anything that needs a model key (the end-to-end suite uses a fake model anyway).
+# - Node: 24.9 is the lowest Node that DSH 0.2.2 runs on; 22.19 is the plugin's own engines floor (DSH 0.2.1 runs on Node 22);
+#   26 is the current LTS that a fresh Windows install gets.
+name: CI
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Only cancel superseded pull-request runs: every pushed commit on main / release/** keeps its own run,
+  # because npm-publish.yml requires a successful run on the exact tagged commit.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, node: '24.9.0' }
+          - { os: ubuntu-24.04, node: '22.19.0' }
+          - { os: ubuntu-24.04, node: '26' }
+          - { os: macos-15, node: '24.9.0' }
+          - { os: windows-2025, node: '24.9.0' }
+          - { os: windows-2025, node: '26' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1 (version from package.json "packageManager")
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Show PowerShell versions (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Pack and check the npm tarball
+        if: runner.os == 'Linux' && matrix.node == '24.9.0'
+        run: |
+          set -euo pipefail
+          scripts/pack.sh "$RUNNER_TEMP/pack"
+          TGZ=$(ls "$RUNNER_TEMP"/pack/dsh-master-*.tgz)
+          tar tzf "$TGZ" > "$RUNNER_TEMP/list.txt"
+          for f in package/package.json package/cordis.patch.yml package/lib/index.js package/lib/client.js package/README.md package/README.zh-CN.md package/LICENSE; do
+            grep -qx "$f" "$RUNNER_TEMP/list.txt" || { echo "missing in tarball: $f"; exit 1; }
+          done
+          tar xzOf "$TGZ" package/package.json > "$RUNNER_TEMP/pkg.json"
+          node -e 'const p=require(process.argv[1]); const src=require("./packages/dsh-master/package.json"); if (p.devDependencies||p.scripts) { console.error("devDependencies/scripts left in package.json"); process.exit(1) } if (p.version!==src.version||p.name!=="dsh-master") { console.error("name/version mismatch: "+p.name+"@"+p.version); process.exit(1) }' "$RUNNER_TEMP/pkg.json"
+          sha256sum "$TGZ"
