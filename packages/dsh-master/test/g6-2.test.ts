@@ -29,7 +29,7 @@ describe('G6-2 开张用到的小工具', () => {
   it('claimOwner：没人占就写上自己；同一个实例重开照样可以；别的实例（状态目录不同）占着就返回占用者', () => {
     const root = tmpdir('own')
     expect(claimOwner(root, '/state/a')).toBeUndefined()
-    expect(JSON.parse(fs.readFileSync(path.join(projectDotDir(root), 'owner'), 'utf8')).stateDir).toBe('/state/a')
+    expect(JSON.parse(fs.readFileSync(path.join(projectDotDir(root), 'owner'), 'utf8')).stateDir).toBe(path.resolve('/state/a'))
     expect(claimOwner(root, '/state/a/')).toBeUndefined()
     expect(claimOwner(root, '/state/b')).toMatchObject({ stateDir: '/state/a' })
   })

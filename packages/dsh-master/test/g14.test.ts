@@ -114,7 +114,7 @@ describe('G14 ④ 压缩后直接带回在途任务和手册「标准做法」�
     s.core.onCompaction('exec-a', '9'); await flush()
     const t = s.dport.calls.filter(c => c.to === 'exec-a').at(-1)!.text
     expect(t.length).toBeLessThan(3600)
-    expect(t).toMatch(/截断[\s\S]*handbooks\/exec-a\.md/)
+    expect(t).toMatch(/截断[\s\S]*handbooks[\\/]exec-a\.md/)
   })
 })
 

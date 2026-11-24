@@ -42,8 +42,9 @@ describe('守卫 · 变量写法与相对写', () => {
     expect(bash('echo ffmpeg-free', '/w', 'exec')).toBeUndefined()
   })
   it('bashWriteTargets：重定向、tee、cp/mv 目标、sed -i；读命令没有目标', () => {
-    expect(bashWriteTargets('echo x >> a.md && cat b | tee -a c.md', '/w', {})).toEqual(['/w/a.md', '/w/c.md'])
-    expect(bashWriteTargets('cp x.ts src/y.ts; sed -i "" s/a/b/ z.ts', '/w', {})).toEqual(['/w/src/y.ts', '/w/z.ts'])
+    // bash 只在 Mac / Linux 上有：显式用 posix 路径（Windows CI 上也按 bash 的语义测）
+    expect(bashWriteTargets('echo x >> a.md && cat b | tee -a c.md', '/w', {}, path.posix)).toEqual(['/w/a.md', '/w/c.md'])
+    expect(bashWriteTargets('cp x.ts src/y.ts; sed -i "" s/a/b/ z.ts', '/w', {}, path.posix)).toEqual(['/w/src/y.ts', '/w/z.ts'])
     expect(bashWriteTargets('cat a.md; ls -la 2>&1', '/w', {})).toEqual([])
   })
 })
@@ -110,7 +111,7 @@ describe('Core · 任务书 / 手册 / 记忆工具', () => {
     await s.tool(MASTER_ID, 'task_spec_write')(spec)
     expect(await dispatch({ task: 'T009', kind: 'heavy', title: 't', to: 'a', gate: 'G1', text: '开始' })).toMatchObject({ status: 'queued' })
     await flush()
-    expect(s.dport.calls.at(-1)!.text).toMatch(/任务书：.*tasks\/T009\.md/)
+    expect(s.dport.calls.at(-1)!.text).toMatch(/任务书：.*tasks[\\/]T009\.md/)
   })
   it('回报写进任务书「执行回报」，验收写进「验收记录」；重写任务书保留这两节', async () => {
     await s.tool(MASTER_ID, 'task_spec_write')(spec)
@@ -221,7 +222,7 @@ describe('Core · 用户直接指示 / 压缩后提醒', () => {
     const c = s.dport.calls.filter(x => x.to === 'exec-a')
     expect(c).toHaveLength(1)
     expect(c[0]!.mode).toBe('inject')
-    expect(c[0]!.text).toMatch(/你刚被压缩过[\s\S]*handbooks\/exec-a\.md[\s\S]*devlog_recall/)
+    expect(c[0]!.text).toMatch(/你刚被压缩过[\s\S]*handbooks[\\/]exec-a\.md[\s\S]*devlog_recall/)
   })
 })
 
@@ -369,7 +370,7 @@ describe('试用发现 · 建会话时就有手册骨架', () => {
     const s = setupCore(); await s.core.ensureMaster(tmpdir('m'))
     expect(s.mem.docs.read('handbooks/master.md')).toContain('## 标准做法')
     const r: any = await s.tool(MASTER_ID, 'master_spawn')({ name: 'a', cwd: tmpdir('a'), title: '执行 A' })
-    expect(r.handbook).toMatch(/handbooks\/exec-a\.md$/)
+    expect(r.handbook).toMatch(/handbooks[\\/]exec-a\.md$/)
     const md = s.mem.docs.read('handbooks/exec-a.md')!
     for (const sec of ['标准做法', '坑', '工具与素材', '用户偏好与否决过的做法', '还没想清楚的', '做过的任务']) expect(md).toContain(`## ${sec}`)
     await s.tool('exec-a', 'handbook_add')({ section: '坑', line: '一条经验', source: 's' })

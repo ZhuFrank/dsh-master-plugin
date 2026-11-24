@@ -42,8 +42,9 @@ async function setup(opts: { project?: boolean } = { project: true }) {
 describe('G6-4 认领路径', () => {
   it('相对路径按项目根解析；项目外、项目根本身、.dsh-master/（out/ 除外）不能认领；去重', () => {
     const r = '/p/alpha'
-    expect(normClaims(['src/a/', 'docs/x.md', '/p/alpha/src/a'], r)).toEqual(['/p/alpha/src/a', '/p/alpha/docs/x.md'])
-    expect(normClaims('src/a, src/b', r)).toEqual(['/p/alpha/src/a', '/p/alpha/src/b'])
+    const R = (p: string) => path.resolve(p) // Windows 上 /p/alpha 解析成 当前盘:\p\alpha
+    expect(normClaims(['src/a/', 'docs/x.md', '/p/alpha/src/a'], r)).toEqual([R('/p/alpha/src/a'), R('/p/alpha/docs/x.md')])
+    expect(normClaims('src/a, src/b', r)).toEqual([R('/p/alpha/src/a'), R('/p/alpha/src/b')])
     expect(() => normClaims(['../beta/x'], r)).toThrow(/项目根/)
     expect(() => normClaims(['.'], r)).toThrow(/整个项目根/)
     expect(() => normClaims(['.dsh-master/docs'], r)).toThrow(/状态目录/)
@@ -57,7 +58,7 @@ describe('G6-4 认领路径', () => {
     expect(conflictsWith(['/p/src/a'], 'alpha.x', 'L3', active)).toHaveLength(0)
     expect(claimHit('/p/src/a/z.ts', 'alpha.y', active)?.claim.task).toBe('L1')
     expect(claimHit('/p/src/a/z.ts', 'alpha.x', active)).toBeUndefined()
-    expect(denyText('/p/src/a/z.ts', claimHit('/p/src/a/z.ts', 'alpha.y', active)!, '/p')).toMatch(/src\/a\/z\.ts 在 L1 的认领范围里（负责的是 alpha\.x，认领了 src\/a）/)
+    expect(denyText('/p/src/a/z.ts', claimHit('/p/src/a/z.ts', 'alpha.y', active)!, '/p')).toMatch(/src[\\/]a[\\/]z\.ts 在 L1 的认领范围里（负责的是 alpha\.x，认领了 src\/a）/)
   })
 })
 
@@ -74,7 +75,7 @@ describe('G6-4 派活带认领', () => {
     for (const t of ['L1106-1', 'L1106-3']) expect(s.store.events({ task: t, type: 'claims/overlap' }).map(e => JSON.parse(e.data).reason)).toEqual(['只改一行常量'])
     expect(s.core.activeClaims().map(c => [c.task, c.owner])).toEqual([['L1106-1', 'alpha.x'], ['L1106-2', 'alpha.y'], ['L1106-3', 'alpha.y']])
     // 派活说明里写着认领
-    expect(JSON.parse(s.store.getTask('L1106-1')!.meta)['认领']).toMatch(/^src\/a（只改这些/)
+    expect(JSON.parse(s.store.getTask('L1106-1')!.meta)['认领']).toMatch(/^src[\\/]a（只改这些/)
   })
   it('写别人认领的文件被拦；自己的、总管、没认领的放行；任务完成或成员关闭后认领失效', async () => {
     const s = await setup()

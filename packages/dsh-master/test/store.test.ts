@@ -8,7 +8,7 @@ describe('Store', () => {
     const s = tmpStore()
     expect(s.version).toBe(SCHEMA_VERSION)
     expect((s.db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal')
-    expect(fs.statSync(s.file).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(fs.statSync(s.file).mode & 0o777).toBe(0o600) // Windows 没有 POSIX 权限位
   })
 
   it('events 只能追加：UPDATE / DELETE 都被触发器拦下', () => {

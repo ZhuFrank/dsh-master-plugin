@@ -172,7 +172,7 @@ describe('G6-1 迁移（v3 → v4）与回退', () => {
     expect(v4.gatesFor('L1103-1')).toEqual([])
     const bak = `${file}.pre-v${SCHEMA_VERSION}.bak` // 升到最新版本时的备份名（G14 起最新是 v5+）
     expect(fs.existsSync(bak)).toBe(true)
-    expect((fs.statSync(bak).mode & 0o777).toString(8)).toBe('600')
+    if (process.platform !== 'win32') expect((fs.statSync(bak).mode & 0o777).toString(8)).toBe('600') // Windows 没有 POSIX 权限位
     // 新库里接着加：当天编号接着往下
     expect(v4.getAsk(v4.addAsk({ task: 'L1103-1', question: '新', options: [], at: '2026-11-04T11:00:00+08:00' }))!.code).toBe('Q1104-2')
     v4.db.close()

@@ -69,7 +69,7 @@ describe('G6-3 闸门 / Q 索引（服务端）', () => {
     expect(Object.keys(gi.gates)).toEqual(['G6-1', 'G6-2'])
     expect(gi.gates['G6-1']).toMatchObject({ title: '数据层', status: '进行中', outputs: ['/tmp/out/g61.md', '/tmp/out/projects.ts'] })
     expect(gi.gates['G6-2']!.status).toBe('未验收')
-    expect(gi.spec).toMatch(/tasks\/T013\.md$/)
+    expect(gi.spec).toMatch(/tasks[\\/]T013\.md$/)
     await s.tool('master', 'master_review')({ task: 'T013', verdict: '通过', gate: 'G6-1', notes: '好' })
     gi = s.panel.gateIndex().T013!
     expect(gi.gates['G6-1']!.status).toBe('已验收')

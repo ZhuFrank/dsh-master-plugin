@@ -55,7 +55,23 @@ jobs:
           & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Unit tests
+        run: pnpm test --reporter=default --reporter=github-actions --reporter=json --outputFile.json=vitest-results.json
+      # GitHub shows at most 10 error annotations per step; list every failing test in one annotation so none is hidden.
+      - name: List all failing tests
+        if: failure()
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs")
+            if (!fs.existsSync("vitest-results.json")) process.exit(0)
+            const r = JSON.parse(fs.readFileSync("vitest-results.json", "utf8"))
+            const bad = []
+            for (const f of r.testResults) for (const t of f.assertionResults) if (t.status === "failed")
+              bad.push(f.name.replace(process.cwd(), "").replace(/^[\\/]+/, "") + " > " + t.fullName + " :: " + String((t.failureMessages || [])[0] || "").split("\n")[0].slice(0, 300))
+            const esc = s => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")
+            console.log("::error title=" + bad.length + " failing tests::" + esc(bad.join("\n")))
+          '
       - run: pnpm build
       - name: Pack and check the npm tarball
         if: runner.os == 'Linux' && matrix.node == '24.9.0'

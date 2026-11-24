@@ -443,7 +443,9 @@ describe.runIf(process.platform === 'win32')('G16 W8 真起 PowerShell', () => {
     it(`${path.basename(exe)}：日志里没有报错、没有 CLIXML（进度条、Write-Error）`, async () => {
       const { log } = await run('Write-Progress -Activity a -PercentComplete 50; Write-Output 中文ok; Write-Error boom')
       expect(log).toContain('中文ok')
-      expect(log).not.toMatch(/#< CLIXML|OutputEncoding|句柄无效|handle is invalid/i)
+      // 报错时 PowerShell 会把出错那一行原样打出来，所以只认真正的异常字样，不认脚本里的 OutputEncoding
+      expect(log).not.toMatch(/#< CLIXML|句柄无效|handle is invalid|Exception setting "OutputEncoding"/i)
+      expect(log).not.toContain('$__dshOk') // 前缀和收尾单独成行：报错只带出用户自己那一行
     }, 60_000)
     it(`${path.basename(exe)}：反斜杠紧跟引号`, async () => {
       const { job, log } = await run('Write-Output "E:\\d\\"')

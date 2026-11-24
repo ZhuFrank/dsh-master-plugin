@@ -47,9 +47,10 @@ export function resolvePwsh(env: NodeJS.ProcessEnv = process.env, exists: (p: st
 }
 function lexists(p: string): boolean { try { const st = fs.lstatSync(p); return st.isFile() || st.isSymbolicLink() } catch { return false } }
 
-/** DSH 同款的 UTF-8 前缀 + 关进度条；用户命令后面先换行（命令以 # 注释结尾时收尾不被注释掉），收尾按「最后一条命令」定退出码：
+/** DSH 同款的 UTF-8 前缀 + 关进度条（单独一行：PowerShell 5.1 报错时会把出错那一行原样打进日志，不让前缀混进去；代价是报错行号比用户命令多 1）；
+ *  用户命令后面先换行（命令以 # 注释结尾时收尾不被注释掉），收尾按「最后一条命令」定退出码：
  *  成功 ⇒ 0；失败且原生程序退出码非 0 ⇒ 原样（-Command 会把它压成 1）；其余失败 ⇒ 1。 */
-export const PWSH_PREAMBLE = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ProgressPreference = 'SilentlyContinue'; $global:LASTEXITCODE = 0; "
+export const PWSH_PREAMBLE = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ProgressPreference = 'SilentlyContinue'; $global:LASTEXITCODE = 0\n"
 export const PWSH_EPILOGUE = "\n$__dshOk = $?; if ($__dshOk) { exit 0 } elseif ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 }"
 export function pwshArgv(command: string): string[] {
   return ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `${PWSH_PREAMBLE}${command}${PWSH_EPILOGUE}`]
