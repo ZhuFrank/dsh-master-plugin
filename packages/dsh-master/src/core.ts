@@ -1096,6 +1096,8 @@ export function sameRepoWorktree(wt: string, root: string): boolean {
   try {
     const common = (d: string) => path.resolve(d, execFileSync('git', ['-C', d, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim())
     const top = execFileSync('git', ['-C', wt, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
-    return fs.realpathSync(top) === fs.realpathSync(wt) && fs.realpathSync(common(wt)) === fs.realpathSync(common(root))
+    // G16：Windows 上用 realpathSync.native（展开 8.3 短名，比如 RUNNER~1）并且不分大小写；别的平台照旧
+    const real = process.platform === 'win32' ? (p: string) => fs.realpathSync.native(p).toLowerCase() : (p: string) => fs.realpathSync(p)
+    return real(top) === real(wt) && real(common(wt)) === real(common(root))
   } catch { return false }
 }

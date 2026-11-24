@@ -48,7 +48,7 @@ describe('G6-4 认领路径', () => {
     expect(() => normClaims(['../beta/x'], r)).toThrow(/项目根/)
     expect(() => normClaims(['.'], r)).toThrow(/整个项目根/)
     expect(() => normClaims(['.dsh-master/docs'], r)).toThrow(/状态目录/)
-    expect(normClaims(['.dsh-master/out/T013'], r)).toEqual(['/p/alpha/.dsh-master/out/T013'])
+    expect(normClaims(['.dsh-master/out/T013'], r)).toEqual([R('/p/alpha/.dsh-master/out/T013')])
   })
   it('重叠：相同或一个在另一个下面；自己的、同一件任务的不算', () => {
     const active = [{ task: 'L1', owner: 'alpha.x', paths: ['/p/src/a'], at: '' }]
@@ -58,7 +58,7 @@ describe('G6-4 认领路径', () => {
     expect(conflictsWith(['/p/src/a'], 'alpha.x', 'L3', active)).toHaveLength(0)
     expect(claimHit('/p/src/a/z.ts', 'alpha.y', active)?.claim.task).toBe('L1')
     expect(claimHit('/p/src/a/z.ts', 'alpha.x', active)).toBeUndefined()
-    expect(denyText('/p/src/a/z.ts', claimHit('/p/src/a/z.ts', 'alpha.y', active)!, '/p')).toMatch(/src[\\/]a[\\/]z\.ts 在 L1 的认领范围里（负责的是 alpha\.x，认领了 src\/a）/)
+    expect(denyText('/p/src/a/z.ts', claimHit('/p/src/a/z.ts', 'alpha.y', active)!, '/p')).toMatch(/src[\\/]a[\\/]z\.ts 在 L1 的认领范围里（负责的是 alpha\.x，认领了 src[\\/]a）/)
   })
 })
 
@@ -69,7 +69,7 @@ describe('G6-4 派活带认领', () => {
     await s.tool(s.m, 'master_dispatch')({ task: 'L1106-1', kind: 'light', title: 'a', to: 'x', text: 't', claims: ['src/a/'] })
     await s.tool(s.m, 'master_dispatch')({ task: 'L1106-2', kind: 'light', title: 'b', to: 'y', text: 't', claims: ['src/b/'] })
     await expect(s.tool(s.m, 'master_dispatch')({ task: 'L1106-3', kind: 'light', title: 'c', to: 'y', text: 't', claims: ['src/a/f.ts'] }))
-      .rejects.toThrow(/认领重叠：src\/a\/f\.ts 和 L1106-1（alpha\.x）认领的 src\/a/)
+      .rejects.toThrow(/认领重叠：src[\\/]a[\\/]f\.ts 和 L1106-1（alpha\.x）认领的 src[\\/]a/)
     expect(s.store.getTask('L1106-3')).toBeUndefined()
     await s.tool(s.m, 'master_dispatch')({ task: 'L1106-3', kind: 'light', title: 'c', to: 'y', text: 't', claims: ['src/a/f.ts'], claims_reason: '只改一行常量' })
     for (const t of ['L1106-1', 'L1106-3']) expect(s.store.events({ task: t, type: 'claims/overlap' }).map(e => JSON.parse(e.data).reason)).toEqual(['只改一行常量'])
@@ -90,13 +90,13 @@ describe('G6-4 派活带认领', () => {
     // 再派下一个闸门不写 claims：沿用
     await s.tool(s.m, 'master_dispatch')({ task: 'L1106-1', kind: 'light', title: 'a', to: 'x', text: '再补一处' })
     expect(s.core.claimHitFor('alpha.y', f)?.claim.paths).toEqual([path.join(s.root, 'src/a')])
-    expect(s.store.events({ task: 'L1106-1', type: 'task/dispatched' }).map(e => JSON.parse(e.data).claims ?? null)).toEqual([['src/a'], null])
+    expect(s.store.events({ task: 'L1106-1', type: 'task/dispatched' }).map(e => JSON.parse(e.data).claims ?? null)).toEqual([[path.join('src', 'a')], null]) // 存的是项目内相对路径（Windows 上是 src\a）
     await s.tool('alpha.x', 'master_report')({ task: 'L1106-1', state: '完成', action: '好了' })
     expect(s.core.claimHitFor('alpha.y', f)).toBeUndefined()
     await s.tool(s.m, 'master_close')({ name: 'y' })
     expect(s.core.claimHitFor('alpha.x', path.join(s.root, 'src/b/1.ts'))).toBeUndefined()
     // 看板任务详情显示认领（已失效）
-    expect(s.panel.thread('L1106-1').task!.claims).toEqual({ paths: ['src/a'], active: false, reason: null })
+    expect(s.panel.thread('L1106-1').task!.claims).toEqual({ paths: [path.join('src', 'a')], active: false, reason: null })
     expect(s.panel.thread('L1106-2').task!.claims).toMatchObject({ paths: ['src/b'], active: false })
   })
   it('旧单元（不是项目）：派活没有 claims 参数，也不拦', async () => {

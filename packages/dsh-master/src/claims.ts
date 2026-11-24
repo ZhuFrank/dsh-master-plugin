@@ -28,7 +28,8 @@ export function normClaims(raw: unknown, root: string): string[] {
     const t = x.trim(); if (!t) continue
     const abs = path.resolve(root, t).replace(/\/+$/, '')
     if (!under(abs, root)) throw new Error(`认领只能是项目根 ${root} 里面的文件或目录：${t}`)
-    if (abs === root) throw new Error('不能认领整个项目根（写具体的目录或文件）')
+    // G16：Windows 上根目录的写法可能不一样（盘符大小写、结尾的 \），按相对路径为空判；别的平台照旧比字符串
+    if (abs === root || (process.platform === 'win32' && path.relative(root, abs) === '')) throw new Error('不能认领整个项目根（写具体的目录或文件）')
     if (under(abs, path.join(root, '.dsh-master')) && !under(abs, path.join(root, '.dsh-master', 'out'))) throw new Error('.dsh-master/ 是总管状态目录，不能认领（产物目录 .dsh-master/out/ 可以）')
     if (!out.includes(abs)) out.push(abs)
   }

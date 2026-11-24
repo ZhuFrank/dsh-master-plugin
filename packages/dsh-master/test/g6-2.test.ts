@@ -31,7 +31,7 @@ describe('G6-2 开张用到的小工具', () => {
     expect(claimOwner(root, '/state/a')).toBeUndefined()
     expect(JSON.parse(fs.readFileSync(path.join(projectDotDir(root), 'owner'), 'utf8')).stateDir).toBe(path.resolve('/state/a'))
     expect(claimOwner(root, '/state/a/')).toBeUndefined()
-    expect(claimOwner(root, '/state/b')).toMatchObject({ stateDir: '/state/a' })
+    expect(claimOwner(root, '/state/b')).toMatchObject({ stateDir: path.resolve('/state/a') })
   })
   it('登记时记下真正的总管会话 ID（用户自己建的会话是宿主起的 ID）', () => {
     const base = tmpdir('reg'); const repo = gitInit(path.join(base, 'alpha'))
