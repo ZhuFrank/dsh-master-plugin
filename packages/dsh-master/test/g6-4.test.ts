@@ -97,7 +97,7 @@ describe('G6-4 派活带认领', () => {
     expect(s.core.claimHitFor('alpha.x', path.join(s.root, 'src/b/1.ts'))).toBeUndefined()
     // 看板任务详情显示认领（已失效）
     expect(s.panel.thread('L1106-1').task!.claims).toEqual({ paths: [path.join('src', 'a')], active: false, reason: null })
-    expect(s.panel.thread('L1106-2').task!.claims).toMatchObject({ paths: ['src/b'], active: false })
+    expect(s.panel.thread('L1106-2').task!.claims).toMatchObject({ paths: [path.join('src', 'b')], active: false })
   })
   it('旧单元（不是项目）：派活没有 claims 参数，也不拦', async () => {
     const s = await setup({ project: false })
