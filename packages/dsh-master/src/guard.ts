@@ -32,7 +32,8 @@ const SLEEP = /(?:^|[;&|({!`\n]|\b(?:do|then|else|elif|if|while|until|time|exec|
 const FILE_TOOLS = new Set(['write', 'edit', 'str_replace_editor', 'apply_patch'])
 export const DEFAULT_HEAVY = /(^|[\s;&|(])(ffmpeg|mlx_whisper|whisper|demucs|hyperframes\s+render|blender\s+(-b|--background)|mlx_audio\.tts)(?=\s|$)/
 
-export const NO_WAIT = '[dsh-master 守卫] 总管不等待：回报、空闲提醒、后台任务结束都会自己作为消息到达；结束本轮即可，不要 sleep 或长时间等待（单条命令 ≤30 秒，等后台任务 ≤5 秒）。'
+/** G16-4：写清 sleep 一律拦（G16-3 真机上模型看到「≤30 秒」以为 20 秒的 sleep 会放行）。 */
+export const NO_WAIT = '[dsh-master 守卫] 总管不等待：回报、空闲提醒、后台任务结束都会自己作为消息到达，结束本轮即可。sleep / Start-Sleep 一律拦，和时长无关；单条命令不超过 30 秒，等后台任务不超过 5 秒。'
 export const NO_GIT = '[dsh-master 守卫] 项目成员不提交、不动暂存区和分支（同一个仓库的成员共用一个暂存区，git add / commit / checkout 会互相干扰，也会撞 index.lock）。改完在 master_report 的 body 里列出改了哪些文件，由总管统一提交。只读的 git status / diff / log / show 可以用。'
 /** 会改暂存区、提交、分支、工作树整体的 git 子命令（只读的 status / diff / log / show / blame / grep 放行；`checkout -- 文件` / `restore` 只动单个文件，放行）。 */
 const GIT_MUTATE = /(?:^|[;&|({!`\n]|\b(?:then|do|else|exec|command|env|nohup|time)\s)\s*(?:\S*\/)?git\b((?:\s+(?:-C\s+\S+|-c\s+\S+|--?[\w-]+(?:=\S+)?))*)\s+(add|commit|push|pull|merge|rebase|cherry-pick|revert|reset|stash|tag|am|switch|branch\s+-[dDmM]|checkout(?!\s+--\s))\b/

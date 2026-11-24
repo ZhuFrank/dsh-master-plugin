@@ -6,7 +6,7 @@
 
 ![The dsh-master board: what needs you, a question with clickable answers, finished work (demo project, mock model)](docs/images/board.png)
 
-> Status: early (0.2.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`; the full test suite also passes on DSH `0.2.2-rc.1` (Node 24). From 0.2.2 it also works in the official DeepSeek Harness desktop app (tested on desktop `0.2.2-rc.5`). On DSH 0.2.2 the host's "read before write" file guard is off by default (see [Requirements](#requirements)). The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
+> Status: early (0.2.x). Developed and used daily on macOS with DSH `0.2.1-rc.5`; the full test suite also passes on DSH `0.2.2-rc.1` (Node 24). From 0.2.2 it also works in the official DeepSeek Harness desktop app (tested on desktop `0.2.2-rc.5`). From 0.2.3 it also runs on Windows (tested on Windows 11 with DSH `0.2.2-rc.5`, both `dsh web` and the desktop app). On DSH 0.2.2 the host's "read before write" file guard is off by default (see [Requirements](#requirements)). The UI, the role prompts and the tool descriptions are in Chinese, and timestamps are shown in China Standard Time (UTC+8).
 
 ## Why
 
@@ -37,6 +37,7 @@ A single DSH session works well for a single task. Once you have several streams
 | **Heavy-job queue, smarter** *(0.2.1)* | If the job at the head of the queue needs more free memory than there is, smaller jobs behind it run first. `heavy_cancel` cancels a queued job and `heavy_status` shows the queue and the free memory the plugin sees. A threshold above the machine's total memory is refused, one above current free memory gets a warning, and patrol tells the master about a job stuck for 15 minutes. |
 | **Follow-up reminders** *(0.2.1)* | `master_remind` ("2026-11-28 10:00", "3h", "2d") stores a reminder in the project database; when it is due the master is woken with the text. Reminders missed while DSH was off are delivered late, saying how late. The status bar shows the next one. |
 | **Board: search, hide, archive, your own names** *(0.2.1)* | Search tasks by ID, title, owner or last report and filter by state or owner. Hide any task, or archive a finished one right away (both undoable for 5 s). Give a task a name you remember; the master and members are told and see it next to the ID in every plugin message. |
+| **Windows** *(0.2.3)* | On Windows, DSH gives models a PowerShell tool instead of bash. Heavy jobs now run in PowerShell (they failed on Windows in 0.2.2), and the state-folder guard understands PowerShell: once a command touches a state folder, only read-only commands are allowed. The guard also honours the tools' `workdir` argument, and `heavy_run` applies the caller's role (a member cannot use it to commit or to read the instance logs). Tested on a real Windows 11 machine and in CI on Windows, macOS and Linux. See [Windows](#windows). |
 | **Works in the official desktop app** *(0.2.2)* | In 0.2.1 the board loaded in the official desktop app, but every button (answering a "needs you" card, pause, hide, archive …) failed with "origin 不是本服务": the desktop app strips the `Origin` header when it forwards requests, and the plugin refused all such requests. From 0.2.2 a request without `Origin` is accepted when it carries the board's own request header and a JSON body; a request with an `Origin` must still be same-origin. Also, from 0.2.2 on, disabling and re-enabling the plugin on the Plugins page, or uninstalling and installing a new version, no longer needs a host restart: open master and member sessions keep working (0.2.1 failed every turn with `database is not open` until a restart, so the upgrade from 0.2.1 itself still needs one restart). |
 | **Quieter, more reliable master** *(0.2.1)* | Patrol no longer wakes the master when findings only disappear. Answering a "needs you" card on a closed task goes to the master and wakes it. Late reports on closed tasks are surfaced by patrol. A "needs you" open for more than 2 hours turns red. After a compaction the master or member gets its open tasks, open questions and its handbook's "standard practice" inline. Long report bodies are trimmed for the master (full text kept). `master_ask_close` closes a question you answered in the conversation. |
 
@@ -57,7 +58,7 @@ A single DSH session works well for a single task. Once you have several streams
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
 ```
 
 Start `dsh web` again and reload the page. You can also install from npm: `dsh plugin --profile web add dsh-master`.
@@ -69,7 +70,7 @@ Start `dsh web` again and reload the page. You can also install from npm: `dsh p
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # create the profile once
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.2/dsh-master-0.2.2.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
 dsh --profile master --port 3090                                            # then open http://127.0.0.1:3090
 ```
 
@@ -96,6 +97,8 @@ From 0.2.3 the plugin supports Windows, where DSH gives models a PowerShell tool
   - After installing Node or setting `DSH_HOME`, open a new terminal; an old one still has the old `PATH` / environment.
   - Create the workspace folder from your own (non-admin) account. A folder owned by Administrators makes DSH's sandbox fail to set permissions and every `pwsh` command fails.
   - `dsh web` and the desktop app can share one `DSH_HOME` (they share the model key), but they also share the plugin's state folder: do not run both at the same time, or the second one's plugin will not start.
+  - To install a downloaded `.tgz` into the desktop app, use **Plugins → Add plugin** and enter the file's path (for example `E:\Downloads\dsh-master-0.2.3.tgz`); the command line refuses to change the desktop app's profile.
+- The guard decides by what is written in the command, so a command that merely mentions a state folder (for example a commit message or a string containing `.dsh-master`) together with anything that is not read-only is refused too. Rephrase, or use the `read` / dsh-master tools.
 
 ## Quick start
 

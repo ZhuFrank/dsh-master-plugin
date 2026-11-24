@@ -478,3 +478,12 @@ describe('G16 受管文档的 CRLF', () => {
     mem.close()
   })
 })
+
+// ---------------- G16-4：总管等待的拦截提示写清「sleep 一律拦」 ----------------
+describe('G16-4 等待拦截提示', () => {
+  it('写清 sleep / Start-Sleep 一律拦、和时长无关（G16-3 真机：模型看到「≤30 秒」以为 20 秒的 sleep 会放行）', () => {
+    expect(NO_WAIT).toMatch(/总管不等待/) // e2e g2-flow 按这几个字认
+    expect(NO_WAIT).toMatch(/sleep \/ Start-Sleep 一律拦，和时长无关/)
+    expect(NO_WAIT).not.toMatch(/单条命令 ≤30 秒/)
+  })
+})

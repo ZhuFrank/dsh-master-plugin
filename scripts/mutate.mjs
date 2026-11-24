@@ -1012,8 +1012,8 @@ const MUTATIONS = [
     find: "  if (typeof wd !== 'string' || !wd.trim()) return call.cwd", replace: "  if (true) return call.cwd", cmd: g16('workdir') },
   { id: 'g16-heavy-context', what: '（Q5）heavy_run 提交前也查「直接跑重活」', file: GP('guard.ts'),
     find: "      if (cfg.context !== 'heavy' && call.role === 'exec' && (cfg.heavyPattern ?? DEFAULT_HEAVY).test(expanded)) return USE_HEAVY_RUN", replace: "      if (call.role === 'exec' && (cfg.heavyPattern ?? DEFAULT_HEAVY).test(expanded)) return USE_HEAVY_RUN", cmd: g16('context') },
-  { id: 'g16-heavy-role-e2e', what: '（Q5）heavy_run 的守卫不带角色（e2e：成员借重活读实例日志）', file: GP('index.ts'),
-    find: "return guardDecision({ name: process.platform === 'win32' ? 'pwsh' : 'bash', args: { command }, cwd, role },", replace: "return guardDecision({ name: process.platform === 'win32' ? 'pwsh' : 'bash', args: { command }, cwd },", cmd: e2e3 },
+  { id: 'g16-heavy-secret-e2e', what: '（Q5）heavy_run 的守卫不查实例日志目录（e2e：成员借重活读实例日志）', file: GP('index.ts'),
+    find: "env, noGit, secretPaths, context: 'heavy' })", replace: "env, noGit, context: 'heavy' })", cmd: e2e3, build: true },
   { id: 'g16-heavy-win', what: '（W8）Windows 上也用 /bin/bash', file: GP('heavy.ts'),
     find: "    const win = (this.opts.platform ?? process.platform) === 'win32'", replace: "    const win = false", cmd: g16('W8') },
   { id: 'g16-windowshide', what: '（W8）不带 windowsHide', file: GP('heavy.ts'),
@@ -1075,6 +1075,8 @@ const MUTATIONS = [
     find: "    if (kind === 'copy-item' || kind === 'move-item') { if (dests.length) dests.forEach(add); else", replace: "    if (kind === 'copy-item' || kind === 'move-item') { paths.forEach(add); if (dests.length) dests.forEach(add); else", cmd: g16('写目标') },
   { id: 'g16-tee-variable', what: '（审稿 S8）Tee-Object -Variable 的变量名当路径', file: GP('guard-pwsh.ts'),
     find: "  'variable', 'outvariable',", replace: "  'outvariable',", cmd: g16('写目标') },
+  { id: 'g16-nowait-text', what: '（G16-4）等待拦截提示改回「单条命令 ≤30 秒」的旧写法', file: GP('guard.ts'),
+    find: "结束本轮即可。sleep / Start-Sleep 一律拦，和时长无关；单条命令不超过 30 秒，等后台任务不超过 5 秒。'", replace: "结束本轮即可，不要 sleep 或长时间等待（单条命令 ≤30 秒，等后台任务 ≤5 秒）。'", cmd: g16('等待拦截提示') },
 ]
 
 const args = process.argv.slice(2)
