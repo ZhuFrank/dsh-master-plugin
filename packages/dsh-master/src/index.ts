@@ -54,6 +54,8 @@ export interface Config {
   permissionPreset?: string
   /** G7：只有总管能读的目录，默认 [$DSH_HOME/logs]。 */
   secretPaths?: string[]
+  /** G18：再加几个凭据文件 / 目录（任何会话都不能读写，总管也不行）。默认的 $DSH_HOME/.credentials.yaml、$DSH_HOME/.env、$DSH_HOME/liveshare 总是在，这里只能加不能减（改过凭据插件 path 的把新位置加进来）。 */
+  credentialPaths?: string[]
   /** G7 ④：项目总管的权限预设。默认 danger-full-access（完全权限，Frank 11-07 #427 定）；写 workspace-write 就收窄成「工作区内修改」。 */
   projectMasterPreset?: string
   /** G6-4：项目成员的权限预设（默认 workspace-write：只写项目根，往外写弹等你批）。 */
@@ -130,6 +132,8 @@ export function apply(ctx: any, config: Config = {}): void {
   const env = { DSH_HOME: home, HOME: os.homedir() }
   /** G7：实例日志目录（dsh.log 里有登录令牌）只有总管能读。 */
   const secretPaths = config.secretPaths ?? [path.join(home, 'logs')]
+  /** G18：凭据文件（模型 key、网页登录 cookie 的签名密钥），任何会话都不能读写。 */
+  const credentialPaths = [...new Set([path.join(home, '.credentials.yaml'), path.join(home, '.env'), path.join(home, 'liveshare'), ...(config.credentialPaths ?? []).map(p => path.resolve(home, p))])]
   const cwdOf = (agent: any): string | undefined => {
     try { return ctx.get?.('workingDirectory')?.get(agent.session) ?? agent?.session?.header?.cwd } catch { return agent?.session?.header?.cwd }
   }
@@ -173,7 +177,7 @@ export function apply(ctx: any, config: Config = {}): void {
       const u = unitOf(session)
       const role = session && u ? u.core.roleOf(session) : undefined
       const noGit = !!(u?.project && role === 'exec' && session && !u.store.getMeta(`worktree:${session}`))
-      return guardDecision({ name: process.platform === 'win32' ? 'pwsh' : 'bash', args: { command }, cwd, role }, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths, context: 'heavy' })
+      return guardDecision({ name: process.platform === 'win32' ? 'pwsh' : 'bash', args: { command }, cwd, role }, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths, credentialPaths, context: 'heavy' })
     },
     onDone: job => {
       try { (unitOf(job.session) ?? units.get(LEGACY)!).core.systemNotify({ key: `heavy:${job.id}:${job.state}`, to: job.session, label: '重活结束', text: job.state === 'cancelled' ? `heavy_run #${job.id}「${job.label}」已取消（${(job as any).cancelled_by ?? '未知'} 取消的），没有跑。` : `heavy_run #${job.id}「${job.label}」${job.state === 'done' ? '跑完了' : '失败了'}（${job.start_error ? `启动失败：${job.start_error}` : `exit=${job.exit_code ?? '中断'}`}）。日志：${job.log}${LOG_READ_HINT}` }) }
@@ -400,7 +404,7 @@ export function apply(ctx: any, config: Config = {}): void {
     const cmdWrites = (cmd: unknown): string[] => typeof cmd !== 'string' ? [] : exec?.name === 'bash' ? bashWriteTargets(cmd, runCwd, env) : exec?.name === 'pwsh' ? pwshWriteTargets(cmd, runCwd, env, path) : []
     // G6-4：项目成员（工作目录是项目根，不是临时 worktree）不许动 git 暂存区 / 提交 / 分支
     const noGit = !!(u?.project && role === 'exec' && callerId && !u.store.getMeta(`worktree:${callerId}`))
-    const reason = guardDecision(call, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths })
+    const reason = guardDecision(call, { protectedPaths: protectedPaths(), allowPaths: allowPaths(), env, noGit, secretPaths, credentialPaths })
     if (reason) {
       ;(u ?? legacy).store.addEvent({ at: bjtIso(systemClock()), session: callerId ?? null, type: 'guard/deny', data: { tool: exec?.name, reason } })
       for (const t of u && callerId && reason.includes('不提交') ? activeTasksOf(u, callerId) : []) u!.store.addEvent({ at: bjtIso(systemClock()), task: t, session: callerId!, type: 'guard/git-deny', data: { command: String(exec?.arguments?.command ?? '').slice(0, 200) } })

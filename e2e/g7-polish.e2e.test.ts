@@ -2,7 +2,7 @@
  * G7 打磨轮（假模型 + 沙盒，不起 Chrome；不碰 3090 / 3082）——走宿主那一层真调工具：
  * ⑥ 项目总管调 master_sessions：没有成员、有成员各一次，宿主不报 invalid output，结果里是 { sessions: [...] }；
  * ④ 项目总管的权限预设：默认完全权限（Frank #427），往项目外写得进去；配置 projectMasterPreset: workspace-write 时（第二个测试）往项目外写被沙盒拦、项目里照样能 git 提交；
- * 安全：未入编会话读实例日志目录（$DSH_HOME/logs）被守卫拦，总管能读；
+ * 安全：未入编会话读实例日志目录（$DSH_HOME/logs）被守卫拦，总管能读；G18：凭据文件（.credentials.yaml）成员、未入编、总管都读不到；
  * ⑤ 旧单元存档后，旧总管第一次收到用户消息时，同一轮里收到「已存档、新总管在哪」的说明；只说一次（第二句话、重启后都不再加）；
  * ⑧ 开张通知用 followup：选了预设没说话也马上看到，不会挂在收件箱里等到定时保底。
  */
@@ -82,6 +82,36 @@ it('G7：master_sessions 真调、项目总管权限、日志守卫、存档后�
   expect(tp).not.toContain('FAKE-G7-TOKEN')
   expect((await events(null, 'guard/deny')).some((e: any) => e.session === 'ui-p' && String(e.data.reason).includes('实例日志目录'))).toBe(true)
   expect(await tool('ui-m', 'bash', { command: `cat ${fake}`, description: '总管读实例日志' })).toContain('FAKE-G7-TOKEN')
+
+  // ── G18：凭据文件（模型 key、网页登录 cookie 的签名密钥）谁都不能读：成员、未入编、总管 ──
+  // 宿主已有的记录不动，只在末尾加一行注释当标记；断言只看标记在不在，绝不把工具结果原文放进断言（失败时会打印出来）
+  const cred = path.join(sb.home, '.credentials.yaml')
+  const CRED_MARK = `G18-CRED-MARK-${Date.now()}`
+  fs.appendFileSync(cred, `\n# ${CRED_MARK}\n`)
+  const credCases: Array<[string, string, unknown]> = [
+    ['alpha.x', 'read', { file_path: cred }],
+    ['alpha.x', 'bash', { command: 'cat "$DSH_HOME/.credentials.yaml"', description: '成员读凭据' }],
+    ['ui-p', 'read', { file_path: cred }],
+    ['ui-m', 'read', { file_path: cred }],
+    ['ui-m', 'bash', { command: `cd ${sb.home} && cat .credentials.yaml`, description: '总管读凭据' }],
+  ]
+  for (const [sid, name, args] of credCases) {
+    const r = (await tool(sid, name, args)) ?? ''
+    expect([sid, name, r.includes(CRED_MARK)]).toEqual([sid, name, false])
+    expect([sid, name, r.includes('凭据文件')]).toEqual([sid, name, true])
+  }
+  // 项目成员 / 总管的事件记在项目 alpha 的库里，未入编会话和子代理的记在全局
+  const allDenies = async () => [...(await events(null, 'guard/deny')), ...(await events('alpha', 'guard/deny'))]
+  const credDenies = (await allDenies()).filter((e: any) => String(e.data.reason).includes('凭据文件')).map((e: any) => e.session)
+  expect(new Set(credDenies)).toEqual(new Set(['alpha.x', 'ui-p', 'ui-m']))
+  // 子代理：成员开的子代理也走插件的 tools/pre-execute（角色算「未入编」），照样读不到
+  if (sb.mock.requests().some(r => r.tools.includes('subagent'))) {
+    await run('alpha.x', call('subagent', { description: 'g18 sub', prompt: `${call('read', { file_path: cred })}\nG18-SUB-MARK` }))
+    await sb.waitFor('子代理跑完', () => sb.mock.requests().some(r => r.messages.some(m => m.role === 'user' && m.text.includes('G18-SUB-MARK')) && r.messages.some(m => m.role === 'tool' && m.text.includes('凭据文件'))) || undefined, 30_000)
+    expect(sb.mock.requests().some(r => r.messages.some(m => m.role === 'tool' && m.text.includes(CRED_MARK)))).toBe(false)
+    const subDenies = (await allDenies()).filter((e: any) => String(e.data.reason).includes('凭据文件') && !['alpha.x', 'ui-p', 'ui-m'].includes(e.session))
+    expect(subDenies.length).toBeGreaterThanOrEqual(1)
+  } else console.log('G18：这个宿主没有 subagent 工具，子代理这一段跳过')
 
   // ── ⑧ 开张通知不挂在收件箱：选了总管预设但一句话都没说，也会马上看到「已开张」（以前用 inject，要等它下一步，3090 上挂了 6 小时）──
   const beta = gitRepo(path.join(base, 'beta'))

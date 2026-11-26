@@ -40,6 +40,7 @@ const g1410 = t => unit(['packages/dsh-master/test/g14-10.test.ts', '-t', t])
 const g14r = t => unit(['packages/dsh-master/test/g14-review.test.ts', '-t', t])
 // G16 Windows 兼容（W8 / W9 / W10 / Q5）
 const g16 = t => unit(['packages/dsh-master/test/g16-windows.test.ts', '-t', t])
+const g18 = t => unit(['packages/dsh-master/test/g18.test.ts', '-t', t])
 const g16snap = unit(['packages/dsh-master/test/g16-bash-snapshot.test.ts'])
 const GP = p => path.join(ROOT, 'packages/dsh-master/src', p)
 const e2eOne = f => ['npx', 'vitest', 'run', '--config', 'vitest.e2e.config.ts', `e2e/${f}.e2e.test.ts`]
@@ -518,7 +519,7 @@ const MUTATIONS = [
   { id: "e-nogit-off", what: "（端到端）项目成员不拦 git", file: SRC('index.ts'),
     find: "const noGit = !!(u?.project && role === 'exec' && callerId", replace: "const noGit = false && !!(u?.project && role === 'exec' && callerId", cmd: e2e12, build: true },
   { id: "e-out-blocked", what: "（端到端）产物目录不放行", file: SRC('index.ts'),
-    find: "allowPaths: allowPaths(), env, noGit, secretPaths })", replace: "allowPaths: [], env, noGit, secretPaths })", cmd: e2e12, build: true },
+    find: "allowPaths: allowPaths(), env, noGit, secretPaths, credentialPaths })", replace: "allowPaths: [], env, noGit, secretPaths, credentialPaths })", cmd: e2e12, build: true },
   { id: "e-preset-full", what: "（端到端）项目成员默认完全权限", file: SRC('index.ts'),
     find: "memberPreset: config.projectMemberPreset ?? 'workspace-write'", replace: "memberPreset: config.projectMemberPreset ?? 'danger-full-access'", cmd: e2e12, build: true },
   { id: "e-board-claims", what: "（端到端）任务详情不显示认领", file: CLI,
@@ -606,7 +607,7 @@ const MUTATIONS = [
   { id: 'g7-secret-rule', what: '安全：守卫不查实例日志目录', file: SRC('guard.ts'),
     find: "  if (call.role !== 'master' && cfg.secretPaths?.length && readsSecret({ ...call, cwd }, cfg.secretPaths, env, P)) return NO_SECRET\n", replace: '', cmd: g7('实例日志') },
   { id: 'g7-secret-wire', what: '安全（接线）：入口不把日志目录交给守卫', file: SRC('index.ts'),
-    find: 'env, noGit, secretPaths })', replace: 'env, noGit })', cmd: e2e15, build: true },
+    find: 'env, noGit, secretPaths, credentialPaths })', replace: 'env, noGit, credentialPaths })', cmd: e2e15, build: true },
   { id: 'g7-archived-notice', what: '⑤ 存档后的旧会话不发说明', file: SRC('index.ts'),
     find: "      if (!u && agent && decision?.kind === 'enter' && legacyArchived && legacy.core.roleOf(agent.id)) return archivedNotice(agent.id, decision)\n", replace: '', cmd: e2e15, build: true },
   { id: 'g7-schedule-seen', what: '⑧ 保底不认「见过的发现」（只看发现数）', file: SRC('patrol.ts'),
@@ -1013,7 +1014,7 @@ const MUTATIONS = [
   { id: 'g16-heavy-context', what: '（Q5）heavy_run 提交前也查「直接跑重活」', file: GP('guard.ts'),
     find: "      if (cfg.context !== 'heavy' && call.role === 'exec' && (cfg.heavyPattern ?? DEFAULT_HEAVY).test(expanded)) return USE_HEAVY_RUN", replace: "      if (call.role === 'exec' && (cfg.heavyPattern ?? DEFAULT_HEAVY).test(expanded)) return USE_HEAVY_RUN", cmd: g16('context') },
   { id: 'g16-heavy-secret-e2e', what: '（Q5）heavy_run 的守卫不查实例日志目录（e2e：成员借重活读实例日志）', file: GP('index.ts'),
-    find: "env, noGit, secretPaths, context: 'heavy' })", replace: "env, noGit, context: 'heavy' })", cmd: e2e3, build: true },
+    find: "env, noGit, secretPaths, credentialPaths, context: 'heavy' })", replace: "env, noGit, credentialPaths, context: 'heavy' })", cmd: e2e3, build: true },
   { id: 'g16-heavy-win', what: '（W8）Windows 上也用 /bin/bash', file: GP('heavy.ts'),
     find: "    const win = (this.opts.platform ?? process.platform) === 'win32'", replace: "    const win = false", cmd: g16('W8') },
   { id: 'g16-windowshide', what: '（W8）不带 windowsHide', file: GP('heavy.ts'),
@@ -1077,6 +1078,15 @@ const MUTATIONS = [
     find: "  'variable', 'outvariable',", replace: "  'outvariable',", cmd: g16('写目标') },
   { id: 'g16-nowait-text', what: '（G16-4）等待拦截提示改回「单条命令 ≤30 秒」的旧写法', file: GP('guard.ts'),
     find: "结束本轮即可。sleep / Start-Sleep 一律拦，和时长无关；单条命令不超过 30 秒，等后台任务不超过 5 秒。'", replace: "结束本轮即可，不要 sleep 或长时间等待（单条命令 ≤30 秒，等后台任务 ≤5 秒）。'", cmd: g16('等待拦截提示') },
+  // ---- G18：凭据文件 ----
+  { id: 'g18-cred-off', what: '（G18）守卫不查凭据文件（0.2.3 的行为）', file: GP('guard.ts'),
+    find: "  if (cfg.credentialPaths?.length && touchesCredential(", replace: "  if (false && cfg.credentialPaths?.length && touchesCredential(", cmd: g18('各种读写法都拦') },
+  { id: 'g18-master-reads', what: '（G18）总管照 logs 的规矩放行读凭据', file: GP('guard.ts'),
+    find: "  if (cfg.credentialPaths?.length && touchesCredential(", replace: "  if (call.role !== 'master' && cfg.credentialPaths?.length && touchesCredential(", cmd: g18('master：') },
+  { id: 'g18-recursive', what: '（G18）不管递归读凭据所在目录（grep -r / 打包 / 复制目录）', file: GP('guard.ts'),
+    find: "        if (recursive && inDirRange(r)) return true // ④ 递归读凭据所在目录", replace: "        // 变异：不管递归读", cmd: g18('各种读写法都拦') },
+  { id: 'g18-wire', what: '（G18）插件没把凭据名单传给守卫（单测绿、只有走宿主的 e2e 能抓）', file: GP('index.ts'),
+    find: "allowPaths: allowPaths(), env, noGit, secretPaths, credentialPaths })", replace: "allowPaths: allowPaths(), env, noGit, secretPaths })", cmd: e2eOne('g7-polish'), build: true },
 ]
 
 const args = process.argv.slice(2)

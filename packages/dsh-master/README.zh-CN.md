@@ -48,6 +48,7 @@ dsh-master 把这些记账的活交给插件：
 | **跟进提醒**（0.2.1） | `master_remind`（「2026-11-28 10:00」「3h」「2d」）把提醒存进项目库，到点叫醒总管、带上原话；DSH 没开时错过的，下次补发并写明晚了多久。状态栏显示下一个提醒。 |
 | **看板：搜索、收起、归档、你自己的叫法**（0.2.1） | 按编号、标题、负责人、最后一句回报搜任务，按状态和负责人筛。任何任务都能收起，已结束的能马上归档（5 秒内可撤销）。给任务起个你好记的叫法，总管和成员会收到说明，之后插件发的消息里编号后面都带着这个叫法。 |
 | **支持 Windows**（0.2.3） | Windows 上 DSH 给模型的是 PowerShell 工具，不是 bash。重活排队改成用 PowerShell 跑（0.2.2 在 Windows 上一律失败）；状态目录守卫认得 PowerShell：命令一碰到状态目录，只放行只读命令。守卫也认工具的 `workdir` 参数；`heavy_run` 按调用者的角色检查（成员不能借它提交 git、读实例日志）。在真 Windows 11 上测过，CI 里 Windows、macOS、Linux 三个系统都跑。见 [Windows](#windows)。 |
+| **凭据守卫**（0.2.4） | 任何会话（成员、总管、子代理、profile 里的普通会话）都不能读写 DSH 的凭据文件（`$DSH_HOME/.credentials.yaml` 存着模型 key 和网页登录 cookie 的签名密钥；还有 `.env`、`liveshare/`）。`read` / `grep` 工具、bash、PowerShell、通配符、对 `$DSH_HOME` 的递归读都拦。只是减速带，不是隔离，见[已知问题](#已知问题)。 |
 | **官方桌面端能用了**（0.2.2） | 0.2.1 在官方桌面端里，看板能看，但点任何按钮（答「等你定」、暂停、收起、归档……）都报「origin 不是本服务」：桌面端转发请求时会去掉来源标记，插件把这种请求全拒了。0.2.2 起，没带来源标记的请求只要带着看板自己加的请求头、是 JSON，就放行；带了来源标记的仍然必须同源。另外，从 0.2.2 起，在插件页停用再启用、或者卸载后装新版，不用重启宿主，开着的总管 / 成员会话照常跑（0.2.1 会每一轮报 `database is not open`，要重启才好；所以从 0.2.1 升上来的这一次，装好后还要重启一次）。 |
 | **总管更安静、更靠谱**（0.2.1） | 巡检发现只是有项消失时不再叫醒总管。已结案任务上的「等你定」答了，交给总管并叫醒它；结案后的迟到回报巡检会报。「等你定」挂超过 2 小时状态栏标红。压缩以后，总管 / 成员直接收到在途任务、没答的问题和手册「标准做法」原文。成员回报正文太长时只给总管看前一段（全文照存）。在对话里答过的「等你定」，总管用 `master_ask_close` 结案。 |
 
@@ -68,7 +69,7 @@ dsh-master 把这些记账的活交给插件：
 **A. 装进日常 profile（`web`）。** 先停掉 `dsh web`，然后运行：
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.4/dsh-master-0.2.4.tgz
 ```
 
 再启动 `dsh web`，刷新网页。也可以从 npm 装：`dsh plugin --profile web add dsh-master`。
@@ -80,7 +81,7 @@ dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/relea
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # 第一次：建 profile
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.4/dsh-master-0.2.4.tgz
 dsh --profile master --port 3090                                            # 打开 http://127.0.0.1:3090
 ```
 
@@ -107,7 +108,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
   - 装完 Node、设好 `DSH_HOME` 之后要开一个新终端，旧终端里还是旧的 `PATH` / 环境变量。
   - 工作目录用自己的账号（非管理员）建。所有者是 Administrators 的目录，DSH 沙盒加不上权限，`pwsh` 命令全会失败。
   - `dsh web` 和桌面端可以共用一个 `DSH_HOME`（模型 key 共用），但插件状态目录也是共用的：两边别同时开，后开的那个插件起不来。
-  - 桌面端装下载好的 `.tgz`：在「插件 → 添加插件」里填文件路径（比如 `E:\Downloads\dsh-master-0.2.3.tgz`）；命令行改不了桌面端的配置，会被拒绝。
+  - 桌面端装下载好的 `.tgz`：在「插件 → 添加插件」里填文件路径（比如 `E:\Downloads\dsh-master-0.2.4.tgz`）；命令行改不了桌面端的配置，会被拒绝。
 - 守卫按命令里写出来的东西判断：命令里只要提到状态目录（比如提交说明或字符串里写了 `.dsh-master`），又带着不是只读的命令，也会被拦。换个说法，或者改用 `read` / dsh-master 工具。
 
 ## 快速上手
@@ -130,6 +131,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
     projectMemberPreset: workspace-write   # 默认
     scheduleEverySeconds: 21600            # 定时保底间隔；0 关闭
     secretPaths: []                        # 默认 [$DSH_HOME/logs]：只有总管能读的目录
+    credentialPaths: []                    # 再加几个谁都不能读的凭据文件 / 目录（下面那几个默认的总是在）
 ```
 
 | 配置 | 默认值 | 含义 |
@@ -141,6 +143,7 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 | `idleGraceMs` | `120000` | 成员一轮结束、没回报，过多久提醒总管。 |
 | `directToMember` | `true` | 允许直接找成员（见「直接找成员」）。写 `false` 回到 0.1.x 的做法：你的每一轮话和看板上的回答都经总管。 |
 | `secretPaths` | `[$DSH_HOME/logs]` | 非总管会话不能读的目录（dsh.log 里有登录令牌）。 |
+| `credentialPaths` | `[]` | 再加几个**任何会话**都不能读写的凭据文件或目录，总管也不行。`$DSH_HOME/.credentials.yaml`（模型 key 和网页登录 cookie 的签名密钥）、`$DSH_HOME/.env`、`$DSH_HOME/liveshare/` 总是在名单里；改过凭据文件位置的，把新位置加进来。 |
 | `stateDir` | `$DSH_HOME/dsh-master` | 插件状态目录：SQLite 数据库、文档、备份。 |
 | `legacy` | 自动 | 不分项目、全局只有一个总管的早期形态。新装默认 `off`；只有想要一个不绑项目的全局总管时，才写 `active`。 |
 | `autoRecall` | `{ byFile: true, byTopic: true }` | 写文件前、每一步开始前自动推送 devlog 前情。 |
@@ -151,8 +154,9 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 
 - **两个 Agent 预设**：「dsh-master 总管」和「dsh-master 执行会话」。后者由插件自己用，不供手动选择。
 - **会话**：总管和成员都是普通的 DSH 会话，会出现在侧栏里。不属于任何项目的会话，不会多出工具、守则或提醒。
-- **守卫对 profile 里的每个会话生效**，但项目以外的会话只受两条约束：
+- **守卫对 profile 里的每个会话生效**，但项目以外的会话只受三条约束：
   - 不能读 `secretPaths`；
+  - 不能读写 DSH 的凭据文件：`$DSH_HOME/.credentials.yaml`、`$DSH_HOME/.env`、`$DSH_HOME/liveshare/` 和 `credentialPaths`。这一条对所有会话都生效，总管和子代理也一样。让会话帮你看模型 key 会被拒绝，请到「设置 → 模型」里看；
   - 不能直接写插件的状态目录，也就是 `$DSH_HOME/dsh-master` 和 `<项目根>/.dsh-master/`（`out/` 除外）。
 
   其他规则只对总管和成员生效。
@@ -171,6 +175,8 @@ dsh plugin --profile web add link:$PWD/packages/dsh-master
 
 - **DSH 里所有 `git` 命令都报 `missing config key GIT_CONFIG_KEY_0`、退出码 128。** 原因是启动 `dsh web` 的环境里带着 `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`：DSH 的 bash 沙盒会去掉 `GIT_CONFIG_KEY_*`，却把另外两个传了进去。这不是本插件引起的。绕法：启动 DSH 前先 `unset GIT_CONFIG_COUNT`（或用 `env -u GIT_CONFIG_COUNT dsh web …` 启动）。
 - **状态目录守卫只看得到命令里写出来的东西。** 命令里看得出要往插件状态目录里写的（bash 和 PowerShell 都算，也认 `workdir` 参数）会被拦；但运行时用变量拼出来的路径、bash 里先 `cd` 进去再写相对路径、自己写文件的脚本、8.3 短文件名、目录联接 / 符号链接、`subst` 映射的盘符、WSL 的 `/mnt/…` 路径、删掉**上级**目录，都看不出来。兜底是带外改动检测：插件下次写自己的文档时发现被改过，把外面的版本另存到 `drift-copies/`，巡检会报出来。删掉的文件、被改的 `master.db` / `memory.db` 救不回来。
+
+- **凭据守卫只是减速带，不是隔离。** 从 0.2.4 起，用 `read` / `grep` 工具、bash、PowerShell 读写 `$DSH_HOME/.credentials.yaml`、`$DSH_HOME/.env`、`$DSH_HOME/liveshare/` 会被拦：绝对路径，`$DSH_HOME` / `$env:DSH_HOME` / `~` 写法，先 `cd` 或用 `workdir` 再写相对路径，通配符（`$DSH_HOME/.cred*`、`$DSH_HOME/*`），`Join-Path`，以及对 `$DSH_HOME` 本身的递归读（`grep -r`、`rg`、`tar`、`cp -r`、`find -exec`、`Select-String`、`Compress-Archive` 等）。成员开的子代理也走同一个守卫（在 DSH 0.2.1-rc.5 和 0.2.2-rc.4 上测过）。看不出来的：脚本自己打开文件（`python x.py`）、运行时拼出来或编码过的路径、对 `$DSH_HOME` **上级**目录的递归读（比如 `grep -r sk- ~`）、其他插件或 MCP 的读文件工具里参数名不常见的。DeepSeek 自己的文档也写明：本地凭据文件挡不住 agent，因为工具进程和你是同一个系统用户；要真正隔离，请让 DSH 用单独的系统用户运行。0.2.4 以前的版本完全不拦这些文件。
 
 ## 和 DeepSeek Super-agent 设计的关系
 

@@ -38,6 +38,7 @@ A single DSH session works well for a single task. Once you have several streams
 | **Follow-up reminders** *(0.2.1)* | `master_remind` ("2026-11-28 10:00", "3h", "2d") stores a reminder in the project database; when it is due the master is woken with the text. Reminders missed while DSH was off are delivered late, saying how late. The status bar shows the next one. |
 | **Board: search, hide, archive, your own names** *(0.2.1)* | Search tasks by ID, title, owner or last report and filter by state or owner. Hide any task, or archive a finished one right away (both undoable for 5 s). Give a task a name you remember; the master and members are told and see it next to the ID in every plugin message. |
 | **Windows** *(0.2.3)* | On Windows, DSH gives models a PowerShell tool instead of bash. Heavy jobs now run in PowerShell (they failed on Windows in 0.2.2), and the state-folder guard understands PowerShell: once a command touches a state folder, only read-only commands are allowed. The guard also honours the tools' `workdir` argument, and `heavy_run` applies the caller's role (a member cannot use it to commit or to read the instance logs). Tested on a real Windows 11 machine and in CI on Windows, macOS and Linux. See [Windows](#windows). |
+| **Credential guard** *(0.2.4)* | No session — member, master, subagent or an ordinary session in the profile — can read or write DSH's credential files (`$DSH_HOME/.credentials.yaml` holds your model keys and the signing key of the web login cookie; also `.env` and `liveshare/`). Covers the `read` / `grep` tools, bash and PowerShell, wildcards and recursive reads of `$DSH_HOME`. A speed bump, not isolation: see [Known issues](#known-issues). |
 | **Works in the official desktop app** *(0.2.2)* | In 0.2.1 the board loaded in the official desktop app, but every button (answering a "needs you" card, pause, hide, archive …) failed with "origin 不是本服务": the desktop app strips the `Origin` header when it forwards requests, and the plugin refused all such requests. From 0.2.2 a request without `Origin` is accepted when it carries the board's own request header and a JSON body; a request with an `Origin` must still be same-origin. Also, from 0.2.2 on, disabling and re-enabling the plugin on the Plugins page, or uninstalling and installing a new version, no longer needs a host restart: open master and member sessions keep working (0.2.1 failed every turn with `database is not open` until a restart, so the upgrade from 0.2.1 itself still needs one restart). |
 | **Quieter, more reliable master** *(0.2.1)* | Patrol no longer wakes the master when findings only disappear. Answering a "needs you" card on a closed task goes to the master and wakes it. Late reports on closed tasks are surfaced by patrol. A "needs you" open for more than 2 hours turns red. After a compaction the master or member gets its open tasks, open questions and its handbook's "standard practice" inline. Long report bodies are trimmed for the master (full text kept). `master_ask_close` closes a question you answered in the conversation. |
 
@@ -58,7 +59,7 @@ A single DSH session works well for a single task. Once you have several streams
 **A. Into your everyday profile (`web`).** Stop `dsh web`, then:
 
 ```sh
-dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
+dsh plugin --profile web add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.4/dsh-master-0.2.4.tgz
 ```
 
 Start `dsh web` again and reload the page. You can also install from npm: `dsh plugin --profile web add dsh-master`.
@@ -70,7 +71,7 @@ Start `dsh web` again and reload the page. You can also install from npm: `dsh p
 ```sh
 export DSH_HOME=~/.dsh-master DSH_AGENTS_HOME=~/.dsh-master/agents-home
 dsh --profile master --from-default-profile web --dump-config > /dev/null   # create the profile once
-dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.3/dsh-master-0.2.3.tgz
+dsh plugin --profile master add https://github.com/ZhuFrank/dsh-master-plugin/releases/download/v0.2.4/dsh-master-0.2.4.tgz
 dsh --profile master --port 3090                                            # then open http://127.0.0.1:3090
 ```
 
@@ -97,7 +98,7 @@ From 0.2.3 the plugin supports Windows, where DSH gives models a PowerShell tool
   - After installing Node or setting `DSH_HOME`, open a new terminal; an old one still has the old `PATH` / environment.
   - Create the workspace folder from your own (non-admin) account. A folder owned by Administrators makes DSH's sandbox fail to set permissions and every `pwsh` command fails.
   - `dsh web` and the desktop app can share one `DSH_HOME` (they share the model key), but they also share the plugin's state folder: do not run both at the same time, or the second one's plugin will not start.
-  - To install a downloaded `.tgz` into the desktop app, use **Plugins → Add plugin** and enter the file's path (for example `E:\Downloads\dsh-master-0.2.3.tgz`); the command line refuses to change the desktop app's profile.
+  - To install a downloaded `.tgz` into the desktop app, use **Plugins → Add plugin** and enter the file's path (for example `E:\Downloads\dsh-master-0.2.4.tgz`); the command line refuses to change the desktop app's profile.
 - The guard decides by what is written in the command, so a command that merely mentions a state folder (for example a commit message or a string containing `.dsh-master`) together with anything that is not read-only is refused too. Rephrase, or use the `read` / dsh-master tools.
 
 ## Quick start
@@ -120,6 +121,7 @@ Settings go in your profile's `cordis.patch.yml`:
     projectMemberPreset: workspace-write   # default
     scheduleEverySeconds: 21600            # safety-net schedule; 0 turns it off
     secretPaths: []                        # default [$DSH_HOME/logs]; directories only the master may read
+    credentialPaths: []                    # extra credential files / folders nobody may read (the defaults below always apply)
 ```
 
 | Key | Default | Meaning |
@@ -131,6 +133,7 @@ Settings go in your profile's `cordis.patch.yml`:
 | `idleGraceMs` | `120000` | How long after a member's turn ends without a report before the master is reminded. |
 | `directToMember` | `true` | Talking to members directly (see *Talk to a member directly*). `false` restores the 0.1.x behaviour: every user turn and board answer goes through the master. |
 | `secretPaths` | `[$DSH_HOME/logs]` | Directories that non-master sessions may not read (the DSH log contains the login token). |
+| `credentialPaths` | `[]` | Extra credential files or folders that **no session** may read or write, the master included. `$DSH_HOME/.credentials.yaml` (model keys and the signing key of the web login cookie), `$DSH_HOME/.env` and `$DSH_HOME/liveshare/` are always on the list; add the new location here if you moved the credentials file. |
 | `stateDir` | `$DSH_HOME/dsh-master` | Plugin state: SQLite databases, docs, backups. |
 | `legacy` | auto | The pre-project "single master" mode. New installs leave it `off`; set `active` only if you want one global master that is not tied to a project. |
 | `autoRecall` | `{ byFile: true, byTopic: true }` | Automatic devlog pushes before writes and before steps. |
@@ -141,7 +144,7 @@ Before installing, you should know exactly what the plugin touches:
 
 - **Two agent presets** appear in the preset list: *dsh-master 总管* (master) and *dsh-master 执行会话* (member, used by the plugin itself).
 - **Sessions:** masters and members are ordinary DSH sessions, so they show up in the sidebar. Sessions that do not belong to a project get no extra tools, prompts or reminders.
-- **Guard rules for every session in the profile:** only two rules apply to sessions outside a project. They cannot read `secretPaths`, and they cannot write the plugin's state directories (`$DSH_HOME/dsh-master`, `<project>/.dsh-master/` except `out/`). All other rules apply only to masters and members.
+- **Guard rules for every session in the profile:** only three rules apply to sessions outside a project. They cannot read `secretPaths`; they cannot read or write DSH's credential files (`$DSH_HOME/.credentials.yaml`, `$DSH_HOME/.env`, `$DSH_HOME/liveshare/` and `credentialPaths`) — this one applies to every session including masters, and to subagents; and they cannot write the plugin's state directories (`$DSH_HOME/dsh-master`, `<project>/.dsh-master/` except `out/`). All other rules apply only to masters and members. If you ask a session to look at your model key, it will be refused; use **Settings → Models** instead.
 - **Schedules:** one *dsh-master 定时巡检保底* entry per project master in your Automations list.
 - **Files:** the plugin's state directory and a `.dsh-master/` folder in each project root (task specs, handbooks, devlog, products). Nothing outside these places is touched.
 
@@ -153,6 +156,8 @@ Remove the plugin from the **Plugins** page, or run `dsh plugin --profile web re
 
 - **Every `git` command inside DSH fails with `missing config key GIT_CONFIG_KEY_0` (exit 128).** This happens when the environment that starts `dsh web` contains `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`: DSH's bash sandbox drops the `GIT_CONFIG_KEY_*` variables but passes the other two. It is not caused by this plugin. Workaround: start DSH with `unset GIT_CONFIG_COUNT` (or `env -u GIT_CONFIG_COUNT dsh web …`).
 - **The state-folder guard only sees what is written in the command.** It refuses commands that visibly write into the plugin's state folders (bash and PowerShell, including the `workdir` argument), but not a path assembled at run time from variables, a bash `cd` into the folder followed by a relative path, a script that writes files on its own, 8.3 short names, junctions / symlinks, a `subst` drive, a WSL `/mnt/…` path, or deleting a *parent* folder. The backstop is the out-of-band change check: the next time the plugin writes one of its own documents it notices the change, keeps the outside version in `drift-copies/` and patrol reports it. It cannot undo a deleted file or a changed `master.db` / `memory.db`.
+
+- **The credential guard is a speed bump, not isolation.** From 0.2.4 the guard refuses reading or writing `$DSH_HOME/.credentials.yaml`, `$DSH_HOME/.env` and `$DSH_HOME/liveshare/` with the `read` / `grep` tools, bash and PowerShell — absolute, `$DSH_HOME` / `$env:DSH_HOME` / `~` paths, `cd` or `workdir` followed by a relative path, wildcards (`$DSH_HOME/.cred*`, `$DSH_HOME/*`), `Join-Path`, and recursive reads of `$DSH_HOME` itself (`grep -r`, `rg`, `tar`, `cp -r`, `find -exec`, `Select-String`, `Compress-Archive` …). Subagents opened by a member go through the same guard (tested on DSH 0.2.1-rc.5 and 0.2.2-rc.4). It cannot see: a script that opens the file on its own (`python x.py`), a path built at run time or encoded, a recursive read of a folder *above* `$DSH_HOME` (for example `grep -r sk- ~`), and file tools of other plugins or MCP servers whose path argument has an unusual name. DeepSeek's own documentation says the local credentials file cannot be hidden from agents, because their tools run as your OS user; for real isolation run DSH under a separate OS user. Versions before 0.2.4 do not guard these files at all.
 
 ## Relation to DeepSeek's Super-agent design
 

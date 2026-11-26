@@ -4,7 +4,7 @@
  * 守卫只能拦常见写法；兜底是受管文件的带外改动检测（dsh-master-devlog/docs.ts + 巡检）。
  */
 import path from 'node:path'
-import { normalizePwsh, lexPwsh, expandPwsh, pwshTouches, notReadOnly, pwshHeavy, pwshGitMutates, pwshSleeps, underP, type PathImpl } from './guard-pwsh.ts'
+import { normalizePwsh, lexPwsh, expandPwsh, pwshTouches, notReadOnly, pwshHeavy, pwshGitMutates, pwshSleeps, underP, normPathToken, type PathImpl } from './guard-pwsh.ts'
 
 export interface GuardCall { name: string; args: unknown; role?: 'master' | 'exec' | undefined; cwd?: string | undefined }
 export interface GuardConfig {
@@ -19,6 +19,11 @@ export interface GuardConfig {
   noGit?: boolean
   /** G7：只有总管能读的目录（实例日志目录 $DSH_HOME/logs：dsh.log 里有登录令牌，11-06 一个普通会话从这里读到令牌并用 curl 调了接口）。 */
   secretPaths?: string[]
+  /**
+   * G18：凭据文件 / 目录（$DSH_HOME/.credentials.yaml 存模型 key 和网页登录 cookie 的签名密钥；$DSH_HOME/.env；liveshare/ 的管理 token）。
+   * 任何会话都不能直接读写，总管也不行（总管的活用不着 key）。读整个目录树时只拦凭据所在目录本身和它们之间的目录，不拦更上级（见 README 已知问题）。
+   */
+  credentialPaths?: string[]
   /** G16：路径实现（默认 node:path，跟运行平台走；单测传 path.win32 在 Mac 上测 Windows 路径）。 */
   pathImpl?: PathImpl
   /** G16：'heavy' = heavy_run 提交前的检查：不查「成员直接跑重活」和「总管等待」（重活本来就排队在后台跑）。 */
@@ -38,6 +43,7 @@ export const NO_GIT = '[dsh-master 守卫] 项目成员不提交、不动暂存�
 /** 会改暂存区、提交、分支、工作树整体的 git 子命令（只读的 status / diff / log / show / blame / grep 放行；`checkout -- 文件` / `restore` 只动单个文件，放行）。 */
 const GIT_MUTATE = /(?:^|[;&|({!`\n]|\b(?:then|do|else|exec|command|env|nohup|time)\s)\s*(?:\S*\/)?git\b((?:\s+(?:-C\s+\S+|-c\s+\S+|--?[\w-]+(?:=\S+)?))*)\s+(add|commit|push|pull|merge|rebase|cherry-pick|revert|reset|stash|tag|am|switch|branch\s+-[dDmM]|checkout(?!\s+--\s))\b/
 export const NO_SECRET = '[dsh-master 守卫] 实例日志目录（$DSH_HOME/logs）里有登录令牌，只有总管能读。要查日志里的东西请回报总管，由总管来看。'
+export const NO_CREDENTIAL = '[dsh-master 守卫] 这是 DSH 的凭据文件（$DSH_HOME/.credentials.yaml、.env 等，存着模型 key 和网页登录的签名密钥），任何会话都不能直接读写或整个目录打包、递归搜索，总管也不行。要看或改模型 key，请让用户到「设置 → 模型」里操作；连不上模型这类问题，把现象回报给用户。'
 export const USE_HEAVY_RUN = '[dsh-master 守卫] 这是重活（渲染 / 转写 / 分离音轨等），请用 heavy_run 工具排队跑：它会先看系统可用内存，同一时间只跑一件，跑完自动通知你。'
 
 function obj(v: unknown): Record<string, unknown> { return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {} }
@@ -99,6 +105,7 @@ export function guardDecision(call: GuardCall, cfg: GuardConfig): string | undef
   const env = { HOME: process.env.HOME, ...cfg.env }
   const P = cfg.pathImpl ?? path
   const cwd = effectiveCwd(call, env, P)
+  if (cfg.credentialPaths?.length && touchesCredential({ ...call, cwd }, cfg.credentialPaths, env, P)) return NO_CREDENTIAL
   if (call.role !== 'master' && cfg.secretPaths?.length && readsSecret({ ...call, cwd }, cfg.secretPaths, env, P)) return NO_SECRET
   if (call.name === 'pwsh') { const r = pwshDecision(call, cfg, env, P, cwd); if (r) return r }
   if (call.name === 'bash') {
@@ -187,4 +194,116 @@ function readsSecret(call: GuardCall, secret: string[], env: Record<string, stri
     for (const x of Array.isArray(v) ? v : [v]) if (typeof x === 'string' && x) vals.push(x)
   }
   return vals.some(raw => hit(P.resolve(call.cwd ?? '/', raw.startsWith('~/') && home ? path.join(home, raw.slice(2)) : expandVars(raw, env))))
+}
+
+// ---------------- G18：凭据文件 ----------------
+
+/** 会读整棵目录内容的 bash 写法（递归 grep、rg / ag、打包、复制目录、find -exec、xargs）。只列名字的 ls -R / find（不带 -exec）不算。 */
+const RECURSIVE_BASH = /(?:^|[\s;&|(`!])(?:(?:e|f)?grep\b[^;&|\n]*\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive|--dereference-recursive|--directories=recurse|-d\s*recurse)(?=[\s'"]|$)|(?:rg|ag|ack|tar|zip|7z|rsync|scp|zstd|gzip|base64|xxd|od|strings)\b|cp\b[^;&|\n]*\s-[a-zA-Z]*[rRa][a-zA-Z]*(?=\s|$)|find\b[^;&|\n]*\s-(?:exec|execdir|ok|fprint)\b|xargs\b)/
+/** PowerShell 里会读整棵目录内容的写法。 */
+const RECURSIVE_PWSH = /(?:-r(?:ecurse)?\b|-depth\b|compress-archive|robocopy|xcopy|\btar\b|copy-item|\bcpi\b|\bcopy\b|\bcp\b|select-string|\bsls\b|findstr\b[^;|]*\/s\b|::(?:getfiles|enumeratefiles|getfilesystementries|enumeratefilesystementries)\b|io\.compression|\bzip\b|\brg\b)/i
+/** 按内容递归搜索的读类工具（DSH 的 grep 一类）；glob / ls 只列名字。 */
+const RECURSIVE_TOOL = /grep|search|ripgrep|find_in/i
+
+/** 路径通配（* ? [..]）→ 正则；* 也匹配点开头的名字（宁可多拦），** 跨目录。Windows 不分大小写、两种斜杠都认。 */
+function globToRe(p: string, P: PathImpl): RegExp {
+  const win = P.sep === '\\'
+  const sep = win ? '[\\\\/]' : '/'
+  let re = ''
+  for (let i = 0; i < p.length; i++) {
+    const ch = p[i]!
+    if (ch === '*') { if (p[i + 1] === '*') { re += '.*'; i++ } else re += win ? '[^\\\\/]*' : '[^/]*'; continue }
+    if (ch === '?') { re += win ? '[^\\\\/]' : '[^/]'; continue }
+    if (ch === '[') { const j = p.indexOf(']', i + 1); if (j > i) { re += '[' + p.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'; i = j; continue } }
+    if (win && (ch === '\\' || ch === '/')) { re += sep; continue }
+    re += ch.replace(/[.+^${}()|\\]/g, '\\$&')
+  }
+  return new RegExp('^' + re + '$', win ? 'i' : '')
+}
+const hasGlobChar = (t: string) => /[*?]|\[[^\]]+\]/.test(t)
+
+/** 凭据 c 和它所在目录（DSH_HOME）之间的目录（含两头）：对这些目录做递归读 = 读到凭据。 */
+function credDirs(c: string, P: PathImpl): string[] {
+  const root = P.dirname(c)
+  const out = [root]
+  for (let d = c; d !== root && P.dirname(d) !== d; d = P.dirname(d)) out.push(d)
+  return out
+}
+
+/**
+ * G18：这次调用会不会读到（或改到）凭据文件。
+ * ① 命令原文（展开变量、去引号后）包含凭据路径；② 工作目录 / cd / workdir 之后的相对路径、路径词解析后正好是凭据（或在凭据目录里）；
+ * ③ 通配符匹配到凭据；④ 递归读（grep -r、打包、复制目录……）的目标是凭据所在目录；⑤ 「.credentials.yaml」这个名字和没展开的变量 / ~ / DSH_HOME 一起出现；
+ * ⑥ 读类工具的路径参数。拿不准的放行（凭据守卫只是减速带，见 README 已知问题）。
+ */
+export function touchesCredential(call: GuardCall, creds: string[], env: Record<string, string | undefined>, P: PathImpl = path): boolean {
+  const win = P.sep === '\\'
+  const files = creds.map(c => P.resolve(c.replace(/[\\/]+$/, '')))
+  const norm = (s: string) => win ? s.toLowerCase().replace(/\//g, '\\') : s
+  const inCred = (p: string) => files.some(c => under(p, c, P))
+  const inDirRange = (p: string) => files.some(c => credDirs(c, P).some(d => P.relative(d, p) === ''))
+  const globHit = (abs: string, recursive: boolean) => { const re = globToRe(abs, P); return files.some(c => re.test(c) || (recursive && credDirs(c, P).some(d => re.test(d)))) }
+  const named = files.map(c => P.basename(c)).filter(b => b.startsWith('.') && b.toLowerCase() !== '.env')
+  const roots = [...new Set(files.map(c => norm(P.dirname(c))))]
+  const args = obj(call.args)
+  const cwd = call.cwd
+
+  if (call.name === 'bash' || call.name === 'pwsh') {
+    const command = args.command
+    if (typeof command !== 'string') return false
+    const isPwsh = call.name === 'pwsh'
+    const full = isPwsh ? expandPwsh(normalizePwsh(command), env, cwd) : expandVars(command, env)
+    const flat = norm(full.replace(/['"`]/g, '').replace(/\\ /g, ' '))
+    // ① 原文包含（后面要有边界：.env 不能命中 .envrc）
+    for (const c of files) {
+      const nc = norm(c)
+      for (let at = flat.indexOf(nc); at >= 0; at = flat.indexOf(nc, at + 1)) if (/^($|[\\/\s;|&)}\],>])/.test(flat.slice(at + nc.length))) return true
+    }
+    const recursive = (isPwsh ? RECURSIVE_PWSH : RECURSIVE_BASH).test(full)
+    // ② cwd / cd 去过的目录
+    const bases: string[] = [cwd ?? (win ? 'C:\\' : '/')]
+    if (isPwsh) {
+      const ex = full
+      if (pwshTouches(ex, lexPwsh(ex), files, { P, cwd, nameRules: false, allow: [] })) return true
+      for (const m of ex.matchAll(/(?:^|[;|&({\s])(?:cd|chdir|sl|set-location|pushd|push-location)\s+(?:-(?:literal)?path\s+)?(['"]?)([^'";|&)\s]+)\1/gi)) bases.push(P.resolve(bases[0]!, m[2]!))
+    } else {
+      for (const m of full.matchAll(/(?:^|[;&|(\n!]|\b(?:then|do|else)\s)\s*(?:cd|pushd)\s+(['"]?)([^'";&|)\s]+)\1/g)) bases.push(P.resolve(bases[0]!, m[2]!))
+      if (typeof args.workdir === 'string' && cwd) bases.push(cwd)
+    }
+    if (bases.some(b => inCred(b))) return true
+    if (recursive && bases.some(b => inDirRange(b))) return true
+    const toks = isPwsh ? lexPwsh(full).filter(t => t.t === 'word' || t.t === 'str').flatMap(t => t.v.split(',')).map(v => normPathToken(v, P)).filter((v): v is string => !!v)
+      : full.split(/[\s;&|()<>`=]+/).map(t => t.replace(/^['"]+|['"]+$/g, '').replace(/^--?[\w-]+=/, '')).filter(t => t && !t.startsWith('-') && !t.includes('$') && !/^[a-z]+:\/\//i.test(t))
+    for (const t of toks) {
+      for (const b of bases) {
+        const r = P.resolve(b, t)
+        if (hasGlobChar(t)) { if (globHit(r, recursive)) return true; continue }
+        if (inCred(r)) return true // ② 正好是凭据 / 在凭据目录里
+        if (recursive && inDirRange(r)) return true // ④ 递归读凭据所在目录
+      }
+    }
+    // ⑤ 名字 + 没展开的变量 / ~ / DSH_HOME 一起出现（Join-Path $x '.credentials.yaml'、"$D/.credentials.yaml"）
+    const low = full.toLowerCase()
+    if (named.some(n => low.includes(n.toLowerCase())) && (/[$~%]/.test(full) || roots.some(r => flat.includes(r)))) return true
+    return false
+  }
+
+  // ⑥ 读类工具（read / grep / 其他插件的工具）：路径参数
+  const home = env.HOME
+  const vals: string[] = []
+  for (const k of ['file_path', 'path', 'paths', 'dir', 'directory', 'file', 'files', 'filename', 'target', 'cwd', 'workdir']) {
+    const v = args[k]
+    for (const x of Array.isArray(v) ? v : [v]) if (typeof x === 'string' && x) vals.push(x)
+  }
+  const recursive = RECURSIVE_TOOL.test(String(call.name ?? ''))
+  for (const raw of vals) {
+    const ex = raw.startsWith('~/') && home ? P.join(home, raw.slice(2)) : (call.name === 'pwsh' ? raw : expandVars(raw, env))
+    const r = P.resolve(cwd ?? (win ? 'C:\\' : '/'), ex)
+    if (hasGlobChar(ex)) { if (globHit(r, recursive)) return true; continue }
+    if (inCred(r)) return true
+    if (recursive && inDirRange(r)) return true
+  }
+  // grep 类工具：路径没给就是在工作目录里搜
+  if (recursive && !vals.length && cwd && inDirRange(cwd)) return true
+  return false
 }
